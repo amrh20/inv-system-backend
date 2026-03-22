@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Environment (keep .env.example for documentation)
+.env
+.env.*
+!.env.example
+
+# Logs & OS
+*.log
+npm-debug.log*
+.DS_Store
+
+# Optional local uploads / temp
+uploads/
+tmp/

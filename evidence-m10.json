@@ -1,0 +1,64 @@
+{
+  "sessionInfo": {
+    "sessionNo": "CNT-2602-0003",
+    "location": "Engineering Store",
+    "status": "POSTED",
+    "snapshotAt": "2026-02-26T20:19:57.059Z",
+    "postedAt": "2026-02-26T20:19:57.215Z",
+    "createdBy": "Sarah Ahmed"
+  },
+  "approvalHistory": [
+    {
+      "step": 1,
+      "role": "DEPT_MANAGER",
+      "status": "APPROVED",
+      "actedBy": "Omar Al-Said",
+      "actedAt": "2026-02-26T20:19:57.153Z",
+      "comment": "HOD Approved counted qty."
+    },
+    {
+      "step": 2,
+      "role": "COST_CONTROL",
+      "status": "APPROVED",
+      "actedBy": "Nadia Ibrahim",
+      "actedAt": "2026-02-26T20:19:57.167Z",
+      "comment": "Cost Control verified variances."
+    },
+    {
+      "step": 3,
+      "role": "FINANCE_MANAGER",
+      "status": "APPROVED",
+      "actedBy": "Youssef Karimi",
+      "actedAt": "2026-02-26T20:19:57.184Z",
+      "comment": "Finance ok to post."
+    }
+  ],
+  "varianceSummary": {
+    "itemsCounted": 1,
+    "totalItems": 1,
+    "overQty": 2,
+    "shortQty": 0,
+    "overValue": 100,
+    "shortValue": 0,
+    "netVarianceValue": 100
+  },
+  "lines": [
+    {
+      "item": "All-Purpose Cleaner 5L",
+      "bookQty": 8,
+      "countedQty": 10,
+      "varianceQty": 2,
+      "unitCost": 50,
+      "varianceValue": 100
+    }
+  ],
+  "ledgerEntries": [
+    {
+      "itemId": "a2a3b545-e1a0-4f4a-9fd6-dd1ef397fd7b",
+      "type": "COUNT_ADJUSTMENT",
+      "qtyIn": 2,
+      "qtyOut": 0,
+      "totalValue": 100
+    }
+  ]
+}

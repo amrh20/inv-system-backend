@@ -1,0 +1,112 @@
+{
+  "header": {
+    "documentNo": "BRK-2602-0001",
+    "status": "POSTED",
+    "reason": "Glassware damaged during hotel event — accidental breakage",
+    "notes": "Found during morning inspection on 26/02/2026",
+    "documentDate": "2026-02-26T19:35:18.019Z",
+    "createdBy": "Sarah Ahmed",
+    "createdByRole": "ADMIN",
+    "createdByEmail": "admin@grandhorizon.com",
+    "createdAt": "2026-02-26T19:35:18.046Z",
+    "submittedAt": "2026-02-26T19:35:18.179Z",
+    "postedAt": "2026-02-26T19:35:18.165Z",
+    "sourceLocation": "363cee44-1ea1-42e2-a5db-6ab3b4c10383"
+  },
+  "lineItems": [
+    {
+      "itemId": "a2a3b545-e1a0-4f4a-9fd6-dd1ef397fd7b",
+      "itemName": "All-Purpose Cleaner 5L",
+      "barcode": "OSE-007",
+      "qty": 2,
+      "notes": "Broken during banquet setup"
+    }
+  ],
+  "approvalChainDefinition": [
+    {
+      "step": 1,
+      "role": "DEPT_MANAGER",
+      "label": "HOD Approval"
+    },
+    {
+      "step": 2,
+      "role": "COST_CONTROL",
+      "label": "Cost Control Approval"
+    },
+    {
+      "step": 3,
+      "role": "FINANCE_MANAGER",
+      "label": "Finance Approval"
+    }
+  ],
+  "approvalHistory": [
+    {
+      "stepNumber": 1,
+      "role": "DEPT_MANAGER",
+      "label": "HOD Approval",
+      "status": "APPROVED",
+      "actedBy": "Omar Al-Said (DEPT_MANAGER)",
+      "actedByUserId": "59e8be4a-d455-49cc-ad0a-63308d31c620",
+      "actedAt": "2026-02-26T19:35:18.120Z",
+      "comment": "Confirmed breakage during banquet setup. Approved."
+    },
+    {
+      "stepNumber": 2,
+      "role": "COST_CONTROL",
+      "label": "Cost Control Approval",
+      "status": "APPROVED",
+      "actedBy": "Nadia Ibrahim (COST_CONTROL)",
+      "actedByUserId": "d0e2e188-bfb3-4c70-84dd-32dca77c9976",
+      "actedAt": "2026-02-26T19:35:18.147Z",
+      "comment": "Value verified. Total loss within acceptable threshold."
+    },
+    {
+      "stepNumber": 3,
+      "role": "FINANCE_MANAGER",
+      "label": "Finance Approval",
+      "status": "APPROVED",
+      "actedBy": "Youssef Karimi (FINANCE_MANAGER)",
+      "actedByUserId": "2a3310e6-ffeb-4c06-8adf-cfb0f143d5c8",
+      "actedAt": "2026-02-26T19:35:18.165Z",
+      "comment": "Finance approved. Stock deduction authorized."
+    }
+  ],
+  "approvalSummary": {
+    "currentStep": 3,
+    "totalSteps": 3,
+    "overallStatus": "APPROVED"
+  },
+  "attachments": [],
+  "ledgerEntries": [
+    {
+      "id": "51e74fee-9118-4c63-b9aa-fdc505414e90",
+      "itemName": "All-Purpose Cleaner 5L",
+      "locationName": "Engineering Store",
+      "movementType": "BREAKAGE",
+      "qtyOut": 2,
+      "unitCost": 50,
+      "totalValue": 100,
+      "createdAt": "2026-02-26T19:35:18.174Z",
+      "referenceNo": "BRK-2602-0001"
+    }
+  ],
+  "stockImpactSummary": {
+    "perItem": [
+      {
+        "itemId": "a2a3b545-e1a0-4f4a-9fd6-dd1ef397fd7b",
+        "itemName": "All-Purpose Cleaner 5L",
+        "barcode": "OSE-007",
+        "locationId": "363cee44-1ea1-42e2-a5db-6ab3b4c10383",
+        "locationName": "Engineering Store",
+        "qtyBefore": 10,
+        "qtyDeducted": 2,
+        "qtyAfter": 8,
+        "wacAtPosting": 50,
+        "totalLoss": 100
+      }
+    ],
+    "totalLossValue": 100,
+    "currency": "SAR"
+  },
+  "generatedAt": "2026-02-26T19:35:18.265Z"
+}
