@@ -135,9 +135,11 @@ const assignUserToLocation = async (locationId, userId, tenantId) => {
     // Validate location exists
     await getLocationById(locationId, tenantId);
 
-    // Validate user exists in tenant
-    const user = await prisma.user.findFirst({ where: { id: userId, tenantId } });
-    if (!user) {
+    // Validate user has active membership in tenant
+    const membership = await prisma.tenantMember.findUnique({
+        where: { tenantId_userId: { tenantId, userId } },
+    });
+    if (!membership) {
         const error = new Error('User not found');
         error.statusCode = 404;
         throw error;

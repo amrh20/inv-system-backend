@@ -2,7 +2,13 @@ const express = require('express');
 const usersController = require('../controllers/users.controller');
 const { authenticate } = require('../middleware/authenticate');
 const { authorize } = require('../middleware/authorize');
-const { createUserValidator, updateUserValidator, updateRoleValidator, paginationValidator } = require('../utils/validators');
+const {
+    createUserValidator,
+    updateUserValidator,
+    updateRoleValidator,
+    paginationValidator,
+    searchExistingUsersValidator,
+} = require('../utils/validators');
 
 const router = express.Router();
 
@@ -11,6 +17,9 @@ router.use(authenticate);
 
 // GET /api/users  — Admin only
 router.get('/', authorize('ADMIN'), paginationValidator, usersController.listUsers);
+
+// GET /api/users/search-existing  — Admin only
+router.get('/search-existing', authorize('ADMIN'), searchExistingUsersValidator, usersController.searchExistingUsers);
 
 // GET /api/users/:id  — Admin only
 router.get('/:id', authorize('ADMIN'), usersController.getUser);

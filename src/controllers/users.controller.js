@@ -1,6 +1,6 @@
 const usersService = require('../services/users.service');
 const auditService = require('../services/audit.service');
-const { success, created, paginated } = require('../utils/response');
+const { success, created } = require('../utils/response');
 
 /**
  * M01 — Users Controller (Admin operations)
@@ -13,11 +13,27 @@ const listUsers = async (req, res) => {
     const { page, limit, role, isActive, search } = req.query;
     const result = await usersService.listUsers(req.user.tenantId, { page, limit, role, isActive, search });
 
-    return paginated(res, result.users, {
-        page: result.page,
-        limit: result.limit,
-        total: result.total,
+    return res.status(200).json({
+        success: true,
+        data: result.users,
+        meta: {
+            page: result.page,
+            limit: result.limit,
+            total: result.total,
+            totalPages: Math.ceil(result.total / result.limit),
+            maxUsers: result.maxUsers,
+            totalActiveUsers: result.totalActiveUsers,
+        },
     });
+};
+
+/**
+ * GET /api/users/search-existing
+ */
+const searchExistingUsers = async (req, res) => {
+    const { email } = req.query;
+    const users = await usersService.searchExistingUsers(req.user.id, email);
+    return success(res, users);
 };
 
 /**
@@ -32,7 +48,29 @@ const getUser = async (req, res) => {
  * POST /api/users
  */
 const createUser = async (req, res) => {
-    const user = await usersService.createUser(req.user.tenantId, req.body);
+    const {
+        email,
+        password,
+        firstName,
+        lastName,
+        role,
+        phone,
+        departmentId,
+    } = req.body;
+
+    const user = await usersService.createUser(
+        req.user.tenantId,
+        {
+            email,
+            password,
+            firstName,
+            lastName,
+            role,
+            phone,
+            departmentId,
+        },
+        req.user.id
+    );
 
     await auditService.log({
         tenantId: req.user.tenantId,
@@ -93,4 +131,4 @@ const updateUserRole = async (req, res) => {
     return success(res, updated, 'User role updated successfully.');
 };
 
-module.exports = { listUsers, getUser, createUser, updateUser, updateUserRole };
+module.exports = { listUsers, searchExistingUsers, getUser, createUser, updateUser, updateUserRole };

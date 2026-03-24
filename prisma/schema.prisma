@@ -208,6 +208,7 @@ enum ReportType {
 
 model Tenant {
   id               String  @id @default(uuid()) @db.Uuid
+  parentId         String? @db.Uuid
   name             String
   slug             String  @unique
   subscriptionTier String  @default("starter")
@@ -216,6 +217,8 @@ model Tenant {
   phone            String?
   email            String?
   isActive         Boolean @default(true)
+  hasBranches      Boolean @default(false)
+  maxBranches      Int     @default(0)
 
   // --- License & Subscription Management ---
   planType         PlanType           @default(BASIC)
@@ -228,7 +231,9 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users             User[]
+  parent            Tenant?             @relation("TenantHierarchy", fields: [parentId], references: [id])
+  children          Tenant[]            @relation("TenantHierarchy")
+  memberships       TenantMember[]
   categories        Category[]
   subcategories     Subcategory[]
   departments       Department[]
@@ -260,17 +265,17 @@ model Tenant {
   superAdminLogs    SuperAdminLog[]     @relation("SuperAdminLogTenant")
   DocSequence       DocSequence[]
 
+  @@index([parentId])
+  @@index([hasBranches])
   @@map("tenants")
 }
 
 model User {
   id           String    @id @default(uuid()) @db.Uuid
-  tenantId     String?   @db.Uuid
-  email        String
+  email        String    @unique
   passwordHash String
   firstName    String
   lastName     String
-  role         UserRole  @default(STOREKEEPER)
   department   String?
   phone        String?
   isActive     Boolean   @default(true)
@@ -278,7 +283,7 @@ model User {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  tenant             Tenant?             @relation(fields: [tenantId], references: [id])
+  memberships        TenantMember[]
   refreshTokens      RefreshToken[]
   locationUsers      LocationUser[]
   ledgerEntries      InventoryLedger[]   @relation("LedgerCreatedBy")
@@ -311,9 +316,30 @@ model User {
   stockReports      SavedStockReport[]
   generatedReports  GeneratedReport[]  @relation("ReportGeneratedBy")
 
-  @@unique([tenantId, email])
-  @@index([tenantId])
   @@map("users")
+}
+
+model TenantMember {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String?  @db.Uuid
+  userId    String   @db.Uuid
+  departmentId String? @db.Uuid
+  role      UserRole
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant     Tenant?     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  department Department? @relation(fields: [departmentId], references: [id])
+
+  @@unique([tenantId, userId])
+  @@index([userId])
+  @@index([tenantId])
+  @@index([tenantId, role])
+  @@index([departmentId])
+  @@index([tenantId, departmentId])
+  @@map("tenant_members")
 }
 
 model RefreshToken {
@@ -395,6 +421,7 @@ model Department {
   updatedAt DateTime @updatedAt
 
   tenant           Tenant            @relation(fields: [tenantId], references: [id])
+  memberships      TenantMember[]
   locations        Location[]
   items            Item[]
   categories       Category[]        @relation("DepartmentCategories")

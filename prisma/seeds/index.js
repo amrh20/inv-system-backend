@@ -35,12 +35,23 @@ async function main() {
     ];
 
     for (const userData of users) {
+        const { role, ...profileData } = userData;
         const user = await prisma.user.upsert({
-            where: { tenantId_email: { tenantId: tenant.id, email: userData.email } },
-            update: {},
-            create: { tenantId: tenant.id, passwordHash, ...userData },
+            where: { email: userData.email },
+            update: {
+                firstName: profileData.firstName,
+                lastName: profileData.lastName,
+                department: profileData.department || null,
+                isActive: true,
+            },
+            create: { passwordHash, ...profileData },
         });
-        console.log(`  👤 ${user.role}: ${user.firstName} ${user.lastName} (${user.email})`);
+        await prisma.tenantMember.upsert({
+            where: { tenantId_userId: { tenantId: tenant.id, userId: user.id } },
+            update: { role, isActive: true },
+            create: { tenantId: tenant.id, userId: user.id, role, isActive: true },
+        });
+        console.log(`  👤 ${role}: ${user.firstName} ${user.lastName} (${user.email})`);
     }
 
     // ─── Create Departments ─────────────────────────────────────────────────

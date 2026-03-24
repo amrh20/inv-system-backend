@@ -20,7 +20,11 @@ const login = async (req, res) => {
         userAgent: req.headers['user-agent'],
     });
 
-    // Audit login event
+    if (result.requiresTenantSelection) {
+        return res.status(200).json(result);
+    }
+
+    // Audit only when a real tenant/super-admin session was issued.
     await auditService.log({
         tenantId: result.user.tenantId,
         entityType: 'USER',
@@ -74,4 +78,20 @@ const me = async (req, res) => {
     return success(res, user);
 };
 
-module.exports = { login, refresh, logout, me };
+/**
+ * POST /api/auth/switch-tenant
+ */
+const switchTenant = async (req, res) => {
+    const { tenantSlug } = req.body;
+
+    const result = await authService.switchTenant({
+        userId: req.user.id,
+        tenantSlug,
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'],
+    });
+
+    return success(res, result, 'Tenant switched successfully.');
+};
+
+module.exports = { login, refresh, logout, me, switchTenant };

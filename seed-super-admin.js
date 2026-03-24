@@ -1,7 +1,7 @@
 /**
  * SaaS Phase 1 — Seed Platform Tenant + SUPER_ADMIN user
  *
- * Creates a special 'platform' tenant with a SUPER_ADMIN user.
+ * Creates a SUPER_ADMIN user (global membership with null tenant).
  * Usage: node seed-super-admin.js
  */
 const { PrismaClient } = require('@prisma/client');
@@ -53,29 +53,48 @@ async function main() {
     // 4. Create SUPER_ADMIN user
     const email = 'superadmin@ose.cloud';
     const password = 'SuperAdmin@2026';
-    const existing = await prisma.user.findFirst({ where: { tenantId: platform.id, email } });
+    const existing = await prisma.user.findUnique({ where: { email } });
 
     if (!existing) {
         const pwHash = await hashPassword(password);
-        await prisma.user.create({
+        const user = await prisma.user.create({
             data: {
-                tenantId: platform.id,
                 email,
                 passwordHash: pwHash,
                 firstName: 'Super',
                 lastName: 'Admin',
+            },
+        });
+        await prisma.tenantMember.create({
+            data: {
+                tenantId: null,
+                userId: user.id,
                 role: 'SUPER_ADMIN',
+                isActive: true,
             },
         });
         console.log(`  ✅ SUPER_ADMIN user created: ${email} / ${password}`);
     } else {
+        await prisma.tenantMember.upsert({
+            where: { tenantId_userId: { tenantId: null, userId: existing.id } },
+            create: {
+                tenantId: null,
+                userId: existing.id,
+                role: 'SUPER_ADMIN',
+                isActive: true,
+            },
+            update: {
+                role: 'SUPER_ADMIN',
+                isActive: true,
+            },
+        });
         console.log(`  ℹ  SUPER_ADMIN user already exists: ${email}`);
     }
 
     console.log('\n── Done. You can now login as SUPER_ADMIN at /api/auth/login ──');
     console.log(`   email: ${email}`);
     console.log(`   password: ${password}`);
-    console.log(`   tenantSlug: platform`);
+    console.log('   tenantSlug: (not required for super admin)');
 }
 
 main()

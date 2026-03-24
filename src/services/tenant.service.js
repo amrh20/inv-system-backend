@@ -21,7 +21,7 @@ const listTenants = async (query = {}) => {
             where,
             include: {
                 _count: {
-                    select: { users: true }
+                    select: { memberships: true }
                 }
             },
             orderBy: { createdAt: 'desc' },
@@ -30,7 +30,12 @@ const listTenants = async (query = {}) => {
         }),
     ]);
 
-    return { tenants, total, page: pageNum, limit: limitNum };
+    const normalizedTenants = tenants.map((tenant) => ({
+        ...tenant,
+        usersCount: tenant._count?.memberships || 0
+    }));
+
+    return { tenants: normalizedTenants, total, page: pageNum, limit: limitNum };
 };
 
 const createTenant = async (data) => {
@@ -48,9 +53,6 @@ const createTenant = async (data) => {
         throw Object.assign(new Error('Tenant name or slug already exists.'), { statusCode: 400 });
     }
 
-    // Hash the first admin's password
-    const adminPasswordHash = await hashPassword(data.adminUser.password);
-
     // Create the tenant and its initial admin user in a transaction
     const result = await prisma.$transaction(async (tx) => {
         // 1. Create Tenant
@@ -67,14 +69,31 @@ const createTenant = async (data) => {
             }
         });
 
-        // 2. Create the first Admin User
-        await tx.user.create({
-            data: {
+        // 2. Create/attach the first Admin User
+        const normalizedEmail = data.adminUser.email.toLowerCase();
+        let adminUser = await tx.user.findUnique({ where: { email: normalizedEmail } });
+        if (!adminUser) {
+            const adminPasswordHash = await hashPassword(data.adminUser.password);
+            adminUser = await tx.user.create({
+                data: {
+                    email: normalizedEmail,
+                    passwordHash: adminPasswordHash,
+                    firstName: data.adminUser.firstName,
+                    lastName: data.adminUser.lastName,
+                    isActive: true
+                }
+            });
+        }
+
+        await tx.tenantMember.upsert({
+            where: { tenantId_userId: { tenantId: newTenant.id, userId: adminUser.id } },
+            create: {
                 tenantId: newTenant.id,
-                email: data.adminUser.email.toLowerCase(),
-                passwordHash: adminPasswordHash,
-                firstName: data.adminUser.firstName,
-                lastName: data.adminUser.lastName,
+                userId: adminUser.id,
+                role: 'ADMIN',
+                isActive: true
+            },
+            update: {
                 role: 'ADMIN',
                 isActive: true
             }
@@ -120,10 +139,13 @@ const toggleTenantStatus = async (id) => {
 const getTenantById = async (id) => {
     const tenant = await prisma.tenant.findUnique({
         where: { id },
-        include: { _count: { select: { users: true } } }
+        include: { _count: { select: { memberships: true } } }
     });
     if (!tenant) throw Object.assign(new Error('Tenant not found.'), { statusCode: 404 });
-    return tenant;
+    return {
+        ...tenant,
+        usersCount: tenant._count?.memberships || 0
+    };
 };
 
 module.exports = {

@@ -17,4 +17,7 @@ router.post('/logout', authController.logout);
 // GET /api/auth/me  (requires auth)
 router.get('/me', authenticate, authController.me);
 
+// POST /api/auth/switch-tenant (requires auth)
+router.post('/switch-tenant', authenticate, authController.switchTenant);
+
 module.exports = router;

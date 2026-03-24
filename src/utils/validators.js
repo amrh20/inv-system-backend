@@ -31,12 +31,13 @@ const refreshValidator = [
 // ─── User Validators ───────────────────────────────────────────────────────
 const createUserValidator = [
     body('email').isEmail().normalizeEmail().withMessage('Valid email required.'),
-    body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters.'),
-    body('firstName').notEmpty().trim().withMessage('First name is required.'),
-    body('lastName').notEmpty().trim().withMessage('Last name is required.'),
+    body('password').optional().isLength({ min: 8 }).withMessage('Password must be at least 8 characters.'),
+    body('firstName').optional().notEmpty().trim(),
+    body('lastName').optional().notEmpty().trim(),
     body('role')
         .isIn(['ADMIN', 'STOREKEEPER', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'])
         .withMessage('Invalid role.'),
+    body('departmentId').optional({ nullable: true }).isUUID().withMessage('departmentId must be a valid UUID.'),
     validate,
 ];
 
@@ -62,6 +63,17 @@ const paginationValidator = [
     validate,
 ];
 
+const searchExistingUsersValidator = [
+    query('email')
+        .notEmpty()
+        .withMessage('email query is required.')
+        .bail()
+        .isLength({ min: 2 })
+        .withMessage('email query must be at least 2 characters.')
+        .trim(),
+    validate,
+];
+
 module.exports = {
     validate,
     loginValidator,
@@ -70,4 +82,5 @@ module.exports = {
     updateUserValidator,
     updateRoleValidator,
     paginationValidator,
+    searchExistingUsersValidator,
 };

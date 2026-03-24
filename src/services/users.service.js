@@ -14,75 +14,254 @@ const listUsers = async (tenantId, { page = 1, limit = 20, role, isActive, searc
         tenantId,
         ...(role ? { role } : {}),
         ...(isActive !== undefined ? { isActive: isActive === 'true' } : {}),
-        ...(search
-            ? {
+        ...(search ? {
+            user: {
                 OR: [
                     { firstName: { contains: search, mode: 'insensitive' } },
                     { lastName: { contains: search, mode: 'insensitive' } },
                     { email: { contains: search, mode: 'insensitive' } },
                 ],
-            }
-            : {}),
+            },
+        } : {}),
     };
 
-    const [total, users] = await Promise.all([
-        prisma.user.count({ where }),
-        prisma.user.findMany({
+    const [total, memberships, activeMembersCount, tenant] = await Promise.all([
+        prisma.tenantMember.count({ where }),
+        prisma.tenantMember.findMany({
             where,
-            select: {
-                id: true,
-                email: true,
-                firstName: true,
-                lastName: true,
-                role: true,
-                department: true,
-                phone: true,
-                isActive: true,
-                lastLoginAt: true,
-                createdAt: true,
+            include: {
+                user: {
+                    select: {
+                        id: true,
+                        email: true,
+                        firstName: true,
+                        lastName: true,
+                        department: true,
+                        phone: true,
+                        isActive: true,
+                        lastLoginAt: true,
+                        createdAt: true,
+                    },
+                },
+                department: {
+                    select: {
+                        id: true,
+                        name: true,
+                    },
+                },
             },
-            orderBy: [{ role: 'asc' }, { firstName: 'asc' }],
+            orderBy: [{ role: 'asc' }, { user: { firstName: 'asc' } }],
             skip,
             take: limitNum,
         }),
+        prisma.tenantMember.count({
+            where: { tenantId, isActive: true },
+        }),
+        prisma.tenant.findUnique({
+            where: { id: tenantId },
+            select: { maxUsers: true },
+        }),
     ]);
 
-    return { users, total, page: pageNum, limit: limitNum };
+    const users = memberships.map((membership) => ({
+        ...membership.user,
+        role: membership.role,
+        departmentId: membership.department?.id || null,
+        department: membership.department?.name || membership.user.department || null,
+        isActive: membership.isActive && membership.user.isActive,
+    }));
+
+    return {
+        users,
+        total,
+        page: pageNum,
+        limit: limitNum,
+        maxUsers: tenant?.maxUsers ?? 0,
+        totalActiveUsers: activeMembersCount,
+    };
 };
 
-const createUser = async (tenantId, data) => {
-    const passwordHash = await hashPassword(data.password);
+const getAdminTenantIds = async (db, userId) => {
+    const adminMemberships = await db.tenantMember.findMany({
+        where: {
+            userId,
+            role: 'ADMIN',
+            isActive: true,
+            tenantId: { not: null },
+        },
+        select: { tenantId: true },
+        distinct: ['tenantId'],
+    });
 
-    const user = await prisma.user.create({
-        data: {
-            tenantId,
-            email: data.email.toLowerCase(),
-            passwordHash,
-            firstName: data.firstName,
-            lastName: data.lastName,
-            role: data.role,
-            department: data.department || null,
-            phone: data.phone || null,
+    return adminMemberships
+        .map((membership) => membership.tenantId)
+        .filter(Boolean);
+};
+
+const searchExistingUsers = async (requestingUserId, email) => {
+    const normalizedEmail = (email || '').trim().toLowerCase();
+    if (!normalizedEmail) return [];
+
+    const adminTenantIds = await getAdminTenantIds(prisma, requestingUserId);
+    if (adminTenantIds.length === 0) return [];
+
+    const users = await prisma.user.findMany({
+        where: {
+            email: { contains: normalizedEmail, mode: 'insensitive' },
+            memberships: {
+                some: {
+                    tenantId: { in: adminTenantIds },
+                    isActive: true,
+                },
+            },
         },
         select: {
             id: true,
-            email: true,
             firstName: true,
             lastName: true,
-            role: true,
-            department: true,
+            email: true,
             phone: true,
-            isActive: true,
-            createdAt: true,
         },
+        take: 20,
+        orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }, { email: 'asc' }],
+    });
+
+    return users;
+};
+
+const createUser = async (tenantId, data, requestingUserId) => {
+    const email = data.email.toLowerCase();
+
+    const user = await prisma.$transaction(async (tx) => {
+        const tenant = await tx.tenant.findUnique({
+            where: { id: tenantId },
+            select: { id: true, maxUsers: true },
+        });
+        if (!tenant) {
+            throw Object.assign(new Error('Tenant not found.'), { statusCode: 404 });
+        }
+
+        let departmentRecord = null;
+        if (data.departmentId) {
+            departmentRecord = await tx.department.findFirst({
+                where: {
+                    id: data.departmentId,
+                    tenantId,
+                    isActive: true,
+                },
+                select: { id: true, name: true },
+            });
+            if (!departmentRecord) {
+                throw Object.assign(new Error('Invalid department for this tenant.'), { statusCode: 400 });
+            }
+        }
+
+        let targetUser = await tx.user.findUnique({ where: { email } });
+
+        if (!targetUser) {
+            if (!data.password) {
+                throw Object.assign(new Error('Password is required for creating a new user.'), { statusCode: 400 });
+            }
+            if (!data.firstName || !data.lastName) {
+                throw Object.assign(new Error('firstName and lastName are required for creating a new user.'), { statusCode: 400 });
+            }
+
+            const passwordHash = await hashPassword(data.password);
+            targetUser = await tx.user.create({
+                data: {
+                    email,
+                    passwordHash,
+                    firstName: data.firstName,
+                    lastName: data.lastName,
+                    phone: data.phone || null,
+                },
+            });
+        } else {
+            const adminTenantIds = await getAdminTenantIds(tx, requestingUserId);
+            if (adminTenantIds.length === 0) {
+                throw Object.assign(new Error('You are not authorized to import existing users.'), { statusCode: 403 });
+            }
+
+            const sharedMembership = await tx.tenantMember.findFirst({
+                where: {
+                    userId: targetUser.id,
+                    tenantId: { in: adminTenantIds },
+                    isActive: true,
+                },
+                select: { tenantId: true },
+            });
+            if (!sharedMembership) {
+                throw Object.assign(
+                    new Error('You can only import users that belong to your managed tenants.'),
+                    { statusCode: 403 }
+                );
+            }
+        }
+
+        const existingMembership = await tx.tenantMember.findUnique({
+            where: { tenantId_userId: { tenantId, userId: targetUser.id } },
+            select: { isActive: true },
+        });
+        const willConsumeNewSeat = !existingMembership || !existingMembership.isActive;
+
+        if (willConsumeNewSeat) {
+            const activeMembersCount = await tx.tenantMember.count({
+                where: { tenantId, isActive: true },
+            });
+            if (activeMembersCount >= tenant.maxUsers) {
+                throw Object.assign(new Error('Maximum user limit reached for this hotel.'), { statusCode: 400 });
+            }
+        }
+
+        await tx.tenantMember.upsert({
+            where: { tenantId_userId: { tenantId, userId: targetUser.id } },
+            create: {
+                tenantId,
+                userId: targetUser.id,
+                role: data.role,
+                isActive: true,
+                departmentId: departmentRecord?.id || null,
+            },
+            update: {
+                role: data.role,
+                isActive: true,
+                departmentId: departmentRecord?.id || null,
+            },
+        });
+
+        const membership = await tx.tenantMember.findUnique({
+            where: { tenantId_userId: { tenantId, userId: targetUser.id } },
+            include: {
+                user: true,
+                department: {
+                    select: { id: true, name: true },
+                },
+            },
+        });
+
+        return {
+            id: membership.user.id,
+            email: membership.user.email,
+            firstName: membership.user.firstName,
+            lastName: membership.user.lastName,
+            role: membership.role,
+            departmentId: membership.department?.id || null,
+            department: membership.department?.name || null,
+            phone: membership.user.phone,
+            isActive: membership.isActive && membership.user.isActive,
+            createdAt: membership.user.createdAt,
+        };
     });
 
     return user;
 };
 
 const updateUser = async (tenantId, userId, data) => {
-    const user = await prisma.user.findFirst({ where: { id: userId, tenantId } });
-    if (!user) {
+    const membership = await prisma.tenantMember.findUnique({
+        where: { tenantId_userId: { tenantId, userId } },
+        include: { user: true },
+    });
+    if (!membership) {
         throw Object.assign(new Error('User not found.'), { statusCode: 404 });
     }
 
@@ -91,23 +270,34 @@ const updateUser = async (tenantId, userId, data) => {
     if (data.lastName) updateData.lastName = data.lastName;
     if (data.department !== undefined) updateData.department = data.department;
     if (data.phone !== undefined) updateData.phone = data.phone;
-    if (data.isActive !== undefined) updateData.isActive = data.isActive;
     if (data.password) updateData.passwordHash = await hashPassword(data.password);
 
-    const updated = await prisma.user.update({
-        where: { id: userId },
-        data: updateData,
-        select: {
-            id: true,
-            email: true,
-            firstName: true,
-            lastName: true,
-            role: true,
-            department: true,
-            phone: true,
-            isActive: true,
-            updatedAt: true,
-        },
+    const updated = await prisma.$transaction(async (tx) => {
+        const updatedUser = await tx.user.update({
+            where: { id: userId },
+            data: updateData,
+        });
+
+        let updatedMembership = membership;
+        if (data.isActive !== undefined) {
+            updatedMembership = await tx.tenantMember.update({
+                where: { tenantId_userId: { tenantId, userId } },
+                data: { isActive: data.isActive },
+                include: { user: true },
+            });
+        }
+
+        return {
+            id: updatedUser.id,
+            email: updatedUser.email,
+            firstName: updatedUser.firstName,
+            lastName: updatedUser.lastName,
+            role: updatedMembership.role,
+            department: updatedUser.department,
+            phone: updatedUser.phone,
+            isActive: updatedMembership.isActive && updatedUser.isActive,
+            updatedAt: updatedUser.updatedAt,
+        };
     });
 
     return updated;
@@ -119,51 +309,63 @@ const updateUserRole = async (tenantId, userId, role, requestingUserId) => {
         throw Object.assign(new Error('You cannot change your own role.'), { statusCode: 400 });
     }
 
-    const user = await prisma.user.findFirst({ where: { id: userId, tenantId } });
-    if (!user) {
+    const membership = await prisma.tenantMember.findUnique({
+        where: { tenantId_userId: { tenantId, userId } },
+    });
+    if (!membership) {
         throw Object.assign(new Error('User not found.'), { statusCode: 404 });
     }
 
-    const updated = await prisma.user.update({
-        where: { id: userId },
+    const updated = await prisma.tenantMember.update({
+        where: { tenantId_userId: { tenantId, userId } },
         data: { role },
-        select: {
-            id: true,
-            email: true,
-            firstName: true,
-            lastName: true,
-            role: true,
-        },
+        include: { user: true },
     });
 
-    return updated;
+    return {
+        id: updated.user.id,
+        email: updated.user.email,
+        firstName: updated.user.firstName,
+        lastName: updated.user.lastName,
+        role: updated.role,
+    };
 };
 
 const getUserById = async (tenantId, userId) => {
-    const user = await prisma.user.findFirst({
-        where: { id: userId, tenantId },
-        select: {
-            id: true,
-            email: true,
-            firstName: true,
-            lastName: true,
-            role: true,
-            department: true,
-            phone: true,
-            isActive: true,
-            lastLoginAt: true,
-            createdAt: true,
-            locationUsers: {
-                include: { location: { select: { id: true, name: true, type: true } } },
+    const membership = await prisma.tenantMember.findUnique({
+        where: { tenantId_userId: { tenantId, userId } },
+        include: {
+            department: { select: { id: true, name: true } },
+            user: {
+                select: {
+                    id: true,
+                    email: true,
+                    firstName: true,
+                    lastName: true,
+                    department: true,
+                    phone: true,
+                    isActive: true,
+                    lastLoginAt: true,
+                    createdAt: true,
+                    locationUsers: {
+                        include: { location: { select: { id: true, name: true, type: true } } },
+                    },
+                },
             },
         },
     });
 
-    if (!user) {
+    if (!membership) {
         throw Object.assign(new Error('User not found.'), { statusCode: 404 });
     }
 
-    return user;
+    return {
+        ...membership.user,
+        role: membership.role,
+        departmentId: membership.department?.id || null,
+        department: membership.department?.name || membership.user.department || null,
+        isActive: membership.isActive && membership.user.isActive,
+    };
 };
 
-module.exports = { listUsers, createUser, updateUser, updateUserRole, getUserById };
+module.exports = { listUsers, searchExistingUsers, createUser, updateUser, updateUserRole, getUserById };

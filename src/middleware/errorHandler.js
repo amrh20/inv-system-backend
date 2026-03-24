@@ -54,10 +54,16 @@ const errorHandler = (err, req, res, next) => {
 
     // Default 500
     const statusCode = err.statusCode || 500;
-    res.status(statusCode).json({
+    const responseBody = {
         success: false,
         message: process.env.NODE_ENV === 'production' ? 'Internal server error.' : err.message,
-    });
+    };
+
+    if (err.code) {
+        responseBody.error = err.code;
+    }
+
+    res.status(statusCode).json(responseBody);
 };
 
 const notFound = (req, res, next) => {

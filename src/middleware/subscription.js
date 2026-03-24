@@ -91,7 +91,9 @@ const enforceSubscription = async (req, res, next) => {
         if (['POST', 'PATCH', 'PUT'].includes(req.method)) {
             // User limit — check on user creation
             if (req.path.match(/\/users$/i) && req.method === 'POST') {
-                const count = await prisma.user.count({ where: { tenantId, isActive: true } });
+                const count = await prisma.tenantMember.count({
+                    where: { tenantId, isActive: true, user: { isActive: true } },
+                });
                 if (count >= tenant.maxUsers) {
                     return res.status(402).json({
                         success: false,

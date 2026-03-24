@@ -14,7 +14,7 @@ const err = (msg, code = 400) => Object.assign(new Error(msg), { statusCode: cod
 
 // ── Full include for breakage document ───────────────────────────────────────
 const BREAKAGE_INCLUDE = {
-    createdByUser: { select: { id: true, firstName: true, lastName: true, email: true, role: true } },
+    createdByUser: { select: { id: true, firstName: true, lastName: true, email: true } },
     lines: {
         include: {
             item: { select: { id: true, name: true, barcode: true } },
@@ -26,7 +26,7 @@ const BREAKAGE_INCLUDE = {
             steps: {
                 orderBy: { stepNumber: 'asc' },
                 include: {
-                    actedByUser: { select: { id: true, firstName: true, lastName: true, role: true } },
+                    actedByUser: { select: { id: true, firstName: true, lastName: true } },
                 },
             },
         },
@@ -139,7 +139,7 @@ const getBreakages = async (tenantId, query = {}) => {
             take: parseInt(take),
             orderBy: { createdAt: 'desc' },
             include: {
-                createdByUser: { select: { firstName: true, lastName: true, role: true } },
+                createdByUser: { select: { firstName: true, lastName: true } },
                 approvalRequests: { select: { status: true, currentStep: true, totalSteps: true }, take: 1 },
                 _count: { select: { lines: true } },
             },
@@ -185,15 +185,15 @@ const submitBreakage = async (id, tenantId, userId) => {
                 // Find users with the first step role to send an email
                 // In a production system this would target the specific manager 
                 const chain = APPROVAL_CHAIN.find(c => c.step === 1);
-                const approvers = await tx.user.findMany({
-                    where: { tenantId, role: chain.role, isActive: true },
-                    select: { email: true }
+                const approvers = await tx.tenantMember.findMany({
+                    where: { tenantId, role: chain.role, isActive: true, user: { isActive: true } },
+                    select: { user: { select: { email: true } } }
                 });
 
                 const submitter = await tx.user.findUnique({ where: { id: userId } });
 
                 for (const app of approvers) {
-                    await emailService.sendApprovalPendingNotification(approval, submitter, app.email);
+                    await emailService.sendApprovalPendingNotification(approval, submitter, app.user.email);
                 }
             } catch (err) {
                 console.error("Failed to send approval email:", err);
@@ -400,7 +400,7 @@ const getEvidence = async (id, tenantId) => {
         label: APPROVAL_CHAIN.find(c => c.step === s.stepNumber)?.label,
         status: s.status,
         actedBy: s.actedByUser
-            ? `${s.actedByUser.firstName} ${s.actedByUser.lastName} (${s.actedByUser.role})`
+            ? `${s.actedByUser.firstName} ${s.actedByUser.lastName}`
             : null,
         actedByUserId: s.actedBy,
         actedAt: s.actedAt,
@@ -468,7 +468,7 @@ const getEvidence = async (id, tenantId) => {
             createdBy: doc.createdByUser
                 ? `${doc.createdByUser.firstName} ${doc.createdByUser.lastName}`
                 : null,
-            createdByRole: doc.createdByUser?.role,
+            createdByRole: null,
             createdByEmail: doc.createdByUser?.email,
             createdAt: doc.createdAt,
             submittedAt: doc.updatedAt, // approximation

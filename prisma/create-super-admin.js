@@ -19,8 +19,13 @@ async function main() {
     // Check if already exists
     const existing = await prisma.user.findFirst({ where: { email } });
     if (existing) {
+        await prisma.tenantMember.upsert({
+            where: { tenantId_userId: { tenantId: null, userId: existing.id } },
+            create: { tenantId: null, userId: existing.id, role: 'SUPER_ADMIN', isActive: true },
+            update: { role: 'SUPER_ADMIN', isActive: true },
+        });
         console.log(`\n✅  SUPER_ADMIN already exists: ${email}`);
-        console.log(`    Role: ${existing.role}`);
+        console.log('    Role: SUPER_ADMIN');
         return;
     }
 
@@ -29,13 +34,19 @@ async function main() {
     const user = await prisma.user.create({
         data: {
             email,
-            password: hashed,
+            passwordHash: hashed,
             firstName,
             lastName,
+            isActive: true,
+        }
+    });
+    await prisma.tenantMember.create({
+        data: {
+            tenantId: null,
+            userId: user.id,
             role: 'SUPER_ADMIN',
             isActive: true,
-            // tenantId is NULL — Super Admin doesn't belong to any tenant
-        }
+        },
     });
 
     console.log('\n🎉  SUPER_ADMIN user created successfully!');

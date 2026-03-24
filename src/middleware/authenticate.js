@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const prisma = require('../config/database');
 const logger = require('../utils/logger');
 const { enforcetenantScope } = require('./tenantScope');
 const { enforceSubscription } = require('./subscription');
@@ -9,7 +10,7 @@ const { enforceSubscription } = require('./subscription');
  * 2) Chains tenantScope validation
  * 3) Chains subscription enforcement
  */
-const authenticate = (req, res, next) => {
+const authenticate = async (req, res, next) => {
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -23,6 +24,22 @@ const authenticate = (req, res, next) => {
 
     try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+        const membership = await prisma.tenantMember.findFirst({
+            where: {
+                userId: decoded.userId,
+                tenantId: decoded.tenantId || null,
+            },
+            select: { isActive: true },
+        });
+
+        if (membership && membership.isActive === false) {
+            return res.status(401).json({
+                error: 'ACCOUNT_INACTIVE',
+                message: 'Your account has been deactivated by the admin.',
+            });
+        }
+
         req.user = {
             id: decoded.userId,
             tenantId: decoded.tenantId,

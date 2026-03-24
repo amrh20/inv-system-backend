@@ -7,79 +7,75 @@ const logger = require('../utils/logger');
  * M01 — Auth Service
  */
 
-/**
- * Login: verify credentials, issue tokens, store refresh token in DB
- */
-const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
+const formatMembershipOption = (membership) => ({
+    tenantId: membership.tenantId,
+    tenantSlug: membership.tenant?.slug || null,
+    tenantName: membership.tenant?.name || null,
+    role: membership.role,
+    isSuperAdmin: membership.tenantId === null,
+});
 
-    // ── SUPER_ADMIN path: no tenant slug required ─────────────────────────────
-    if (!tenantSlug) {
-        const superUser = await prisma.user.findFirst({
-            where: { email: email.toLowerCase(), role: 'SUPER_ADMIN' },
-        });
-
-        if (!superUser || !superUser.isActive) {
-            throw Object.assign(new Error('Invalid credentials.'), { statusCode: 401 });
-        }
-
-        const passwordValid = await comparePassword(password, superUser.passwordHash);
-        if (!passwordValid) {
-            throw Object.assign(new Error('Invalid credentials.'), { statusCode: 401 });
-        }
-
-        const tokenPayload = {
-            userId: superUser.id,
-            tenantId: null,
-            role: 'SUPER_ADMIN',
-            email: superUser.email,
-        };
-        const accessToken = generateAccessToken(tokenPayload);
-        const refreshToken = generateRefreshToken(tokenPayload);
-
-        await prisma.refreshToken.create({
-            data: {
-                userId: superUser.id,
-                token: refreshToken,
-                expiresAt: getRefreshTokenExpiry(),
-                ipAddress,
-                userAgent,
-            },
-        });
-
-        await prisma.user.update({
-            where: { id: superUser.id },
-            data: { lastLoginAt: new Date() },
-        });
-
-        logger.info(`SUPER_ADMIN logged in: ${superUser.email}`);
-
-        return {
-            accessToken,
-            refreshToken,
-            user: {
-                id: superUser.id,
-                email: superUser.email,
-                firstName: superUser.firstName,
-                lastName: superUser.lastName,
-                role: 'SUPER_ADMIN',
-                tenantId: null,
-                tenantName: null,
-            },
-        };
+const buildAccountInactiveError = () => Object.assign(
+    new Error('Your account has been deactivated by the admin.'),
+    {
+        statusCode: 401,
+        code: 'ACCOUNT_INACTIVE',
     }
+);
 
-    // ── Regular tenant user path ──────────────────────────────────────────────
-    const tenant = await prisma.tenant.findUnique({
-        where: { slug: tenantSlug },
+const issueSessionForMembership = async ({
+    user,
+    membership,
+    ipAddress,
+    userAgent,
+}) => {
+    const tokenPayload = {
+        userId: user.id,
+        tenantId: membership.tenantId,
+        role: membership.role,
+        email: user.email,
+    };
+    const accessToken = generateAccessToken(tokenPayload);
+    const refreshToken = generateRefreshToken(tokenPayload);
+
+    await prisma.refreshToken.create({
+        data: {
+            userId: user.id,
+            token: refreshToken,
+            expiresAt: getRefreshTokenExpiry(),
+            ipAddress,
+            userAgent,
+        },
     });
 
-    if (!tenant || !tenant.isActive) {
-        throw Object.assign(new Error('Tenant not found or inactive.'), { statusCode: 401 });
-    }
+    await prisma.user.update({
+        where: { id: user.id },
+        data: { lastLoginAt: new Date() },
+    });
 
-    // Find user within tenant
+    return {
+        accessToken,
+        refreshToken,
+        user: {
+            id: user.id,
+            email: user.email,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            role: membership.role,
+            department: user.department,
+            tenantId: membership.tenantId,
+            tenantName: membership.tenant?.name || null,
+        },
+    };
+};
+
+/**
+ * Login: verify credentials, then either issue session or return tenant choices
+ */
+const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
+    const normalizedEmail = email.toLowerCase();
     const user = await prisma.user.findUnique({
-        where: { tenantId_email: { tenantId: tenant.id, email: email.toLowerCase() } },
+        where: { email: normalizedEmail },
     });
 
     if (!user || !user.isActive) {
@@ -91,42 +87,68 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
         throw Object.assign(new Error('Invalid credentials.'), { statusCode: 401 });
     }
 
-    // Generate tokens
-    const tokenPayload = { userId: user.id, tenantId: tenant.id, role: user.role, email: user.email };
-    const accessToken = generateAccessToken(tokenPayload);
-    const refreshToken = generateRefreshToken(tokenPayload);
+    const memberships = await prisma.tenantMember.findMany({
+        where: { userId: user.id },
+        include: { tenant: true },
+    });
 
-    // Store refresh token
-    await prisma.refreshToken.create({
-        data: {
-            userId: user.id,
-            token: refreshToken,
-            expiresAt: getRefreshTokenExpiry(),
+    console.log('DEBUG: Found memberships count:', memberships.length);
+    console.log('DEBUG: Memberships IDs:', memberships.map((m) => m.tenantId));
+    console.log('DEBUG: Provided tenantSlug:', tenantSlug);
+
+    const activeMemberships = memberships.filter((membership) => membership.isActive);
+
+    if (activeMemberships.length > 1 && !tenantSlug) {
+        console.log('DEBUG: Triggering Tenant Selection Response');
+        return {
+            success: true,
+            requiresTenantSelection: true,
+            data: {
+                memberships: activeMemberships.map(formatMembershipOption),
+            },
+        };
+    }
+
+    if (activeMemberships.length === 0) {
+        if (memberships.length > 0) {
+            throw buildAccountInactiveError();
+        }
+        throw Object.assign(new Error('No active tenant membership found for this user.'), { statusCode: 403 });
+    }
+
+    const normalizedTenantSlug = typeof tenantSlug === 'string' ? tenantSlug.trim() : '';
+
+    if (normalizedTenantSlug) {
+        const selectedMembership = memberships.find((membership) => membership.tenant?.slug === normalizedTenantSlug);
+        if (!selectedMembership) {
+            throw Object.assign(new Error('You are not authorized for this tenant.'), { statusCode: 403 });
+        }
+        if (!selectedMembership.isActive) {
+            throw buildAccountInactiveError();
+        }
+
+        const result = await issueSessionForMembership({
+            user,
+            membership: selectedMembership,
             ipAddress,
             userAgent,
-        },
-    });
+        });
+        logger.info(`User logged in: ${user.email} [tenant: ${normalizedTenantSlug}]`);
+        return result;
+    }
 
-    // Update last login
-    await prisma.user.update({
-        where: { id: user.id },
-        data: { lastLoginAt: new Date() },
-    });
-
-    logger.info(`User logged in: ${user.email} [tenant: ${tenant.slug}]`);
+    if (activeMemberships.length === 1) {
+        const selected = activeMemberships[0];
+        const result = await issueSessionForMembership({ user, membership: selected, ipAddress, userAgent });
+        logger.info(`User logged in: ${user.email} [tenant: ${selected.tenant?.slug || 'super-admin'}]`);
+        return result;
+    }
 
     return {
-        accessToken,
-        refreshToken,
-        user: {
-            id: user.id,
-            email: user.email,
-            firstName: user.firstName,
-            lastName: user.lastName,
-            role: user.role,
-            department: user.department,
-            tenantId: tenant.id,
-            tenantName: tenant.name,
+        success: true,
+        requiresTenantSelection: true,
+        data: {
+            memberships: activeMemberships.map(formatMembershipOption),
         },
     };
 };
@@ -154,10 +176,36 @@ const refresh = async (refreshToken) => {
 
     const { user } = storedToken;
 
+    let membership;
+    if (decoded.tenantId) {
+        membership = await prisma.tenantMember.findFirst({
+            where: {
+                userId: user.id,
+                tenantId: decoded.tenantId,
+                isActive: true,
+                tenant: { is: { isActive: true } },
+            },
+            include: { tenant: { select: { id: true } } },
+        });
+    } else {
+        membership = await prisma.tenantMember.findFirst({
+            where: {
+                userId: user.id,
+                tenantId: null,
+                role: 'SUPER_ADMIN',
+                isActive: true,
+            },
+        });
+    }
+
+    if (!membership) {
+        throw Object.assign(new Error('Refresh token context is no longer valid.'), { statusCode: 401 });
+    }
+
     const newAccessToken = generateAccessToken({
         userId: user.id,
-        tenantId: user.tenantId,
-        role: user.role,
+        tenantId: membership.tenantId,
+        role: membership.role,
         email: user.email,
     });
 
@@ -180,30 +228,94 @@ const logout = async (refreshToken) => {
  * Me: return current user profile
  */
 const getMe = async (userId, tenantId) => {
-    const user = await prisma.user.findFirst({
-        where: { id: userId, tenantId },
+    const user = await prisma.user.findUnique({
+        where: { id: userId },
         select: {
             id: true,
             email: true,
             firstName: true,
             lastName: true,
-            role: true,
             department: true,
             phone: true,
             isActive: true,
             lastLoginAt: true,
             createdAt: true,
-            tenant: {
-                select: { id: true, name: true, slug: true, logoUrl: true },
-            },
         },
     });
-
     if (!user) {
         throw Object.assign(new Error('User not found.'), { statusCode: 404 });
     }
 
-    return user;
+    const membership = await prisma.tenantMember.findFirst({
+        where: {
+            userId,
+            tenantId: tenantId || null,
+            isActive: true,
+        },
+        include: {
+            tenant: { select: { id: true, name: true, slug: true, logoUrl: true } },
+        },
+    });
+    if (!membership) {
+        throw Object.assign(new Error('Membership not found for this context.'), { statusCode: 404 });
+    }
+
+    return {
+        ...user,
+        role: membership.role,
+        tenant: membership.tenant || null,
+    };
 };
 
-module.exports = { login, refresh, logout, getMe };
+/**
+ * Switch tenant context for an authenticated user
+ */
+const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
+    const normalizedTenantSlug = typeof tenantSlug === 'string' ? tenantSlug.trim() : '';
+    if (!normalizedTenantSlug) {
+        throw Object.assign(new Error('tenantSlug is required.'), { statusCode: 400 });
+    }
+
+    const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+            department: true,
+            isActive: true,
+        },
+    });
+    if (!user || !user.isActive) {
+        throw Object.assign(new Error('User not found or inactive.'), { statusCode: 401 });
+    }
+
+    const membership = await prisma.tenantMember.findFirst({
+        where: {
+            userId,
+            tenant: { is: { slug: normalizedTenantSlug, isActive: true } },
+        },
+        include: {
+            tenant: { select: { id: true, slug: true, name: true } },
+        },
+    });
+    if (!membership) {
+        throw Object.assign(new Error('You are not authorized for this tenant.'), { statusCode: 403 });
+    }
+    if (!membership.isActive) {
+        throw buildAccountInactiveError();
+    }
+
+    const result = await issueSessionForMembership({
+        user,
+        membership,
+        ipAddress,
+        userAgent,
+    });
+
+    logger.info(`User switched tenant: ${user.email} [tenant: ${normalizedTenantSlug}]`);
+    return result;
+};
+
+module.exports = { login, refresh, logout, getMe, switchTenant };

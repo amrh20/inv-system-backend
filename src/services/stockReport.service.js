@@ -781,9 +781,9 @@ const submitStockReport = async (id, tenantId, userId) => {
 
         // Email Finance Manager
         try {
-            const approvers = await prisma.user.findMany({
-                where: { tenantId, role: 'FINANCE_MANAGER', isActive: true },
-                select: { email: true }
+            const approvers = await prisma.tenantMember.findMany({
+                where: { tenantId, role: 'FINANCE_MANAGER', isActive: true, user: { isActive: true } },
+                select: { user: { select: { email: true } } }
             });
             const submitter = await prisma.user.findUnique({ where: { id: userId } });
 
@@ -793,7 +793,7 @@ const submitStockReport = async (id, tenantId, userId) => {
                 notes: `Stock Report No: ${updated.reportNo}`
             };
             for (const app of approvers) {
-                await emailService.sendApprovalPendingNotification(pseudoApproval, submitter, app.email);
+                await emailService.sendApprovalPendingNotification(pseudoApproval, submitter, app.user.email);
             }
         } catch (err) {
             console.error("Failed to send Stock Report approval:", err);

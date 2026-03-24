@@ -18,10 +18,10 @@ const logger = winston.createLogger({
 cron.schedule('0 8 * * *', async () => {
     logger.info('[CRON] Starting Daily Stock Alert check...');
     try {
-        // Find all active tenants
-        const tenants = await prisma.user.findMany({
-            where: { role: 'ADMIN', isActive: true },
-            select: { tenantId: true, email: true },
+        // Find active tenant admins
+        const tenants = await prisma.tenantMember.findMany({
+            where: { role: 'ADMIN', isActive: true, tenantId: { not: null }, user: { isActive: true } },
+            select: { tenantId: true, user: { select: { email: true } } },
             distinct: ['tenantId']
         });
 
@@ -33,7 +33,7 @@ cron.schedule('0 8 * * *', async () => {
             if (criticalAlerts.length > 0) {
                 logger.info(`[CRON] Found ${criticalAlerts.length} critical alerts for tenant ${tenantId}. Sending email...`);
                 // For a more robust solution, you'd aggregate all admins/purchasing managers for the tenant
-                await emailService.sendCriticalStockAlert(criticalAlerts, admin.email);
+                await emailService.sendCriticalStockAlert(criticalAlerts, admin.user.email);
             }
         }
     } catch (error) {

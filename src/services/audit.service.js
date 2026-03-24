@@ -54,7 +54,7 @@ const getAuditLog = async (tenantId, { entityType, entityId, changedBy, from, to
             take: limit,
             include: {
                 changedByUser: {
-                    select: { id: true, firstName: true, lastName: true, email: true, role: true },
+                    select: { id: true, firstName: true, lastName: true, email: true },
                 },
             },
         }),

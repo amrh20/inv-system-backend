@@ -129,9 +129,14 @@ const submitTransfer = async (id, tenantId) => {
 
     // Send email to appropriate approver
     try {
-        const approvers = await prisma.user.findMany({
-            where: { tenantId, role: { in: ['ADMIN', 'MANAGER', 'DEPT_MANAGER'] }, isActive: true },
-            select: { email: true }
+        const approvers = await prisma.tenantMember.findMany({
+            where: {
+                tenantId,
+                role: { in: ['ADMIN', 'DEPT_MANAGER'] },
+                isActive: true,
+                user: { isActive: true },
+            },
+            select: { user: { select: { email: true } } }
         });
         const submitter = await prisma.user.findUnique({ where: { id: trf.requestedBy } });
 
@@ -141,7 +146,7 @@ const submitTransfer = async (id, tenantId) => {
             notes: `Transfer Number: ${updatedTrf.transferNo}`
         };
         for (const app of approvers) {
-            await emailService.sendApprovalPendingNotification(pseudoApproval, submitter, app.email);
+            await emailService.sendApprovalPendingNotification(pseudoApproval, submitter, app.user.email);
         }
     } catch (err) {
         console.error("Failed to send transfer approval email:", err);

@@ -7,8 +7,13 @@ async function main() {
 
     // Update Sarah's account to be Amr instead
     const hash = await bcrypt.hash('Admin@123', 12);
+    const existing = await p.user.findUnique({ where: { email: 'admin@grandhorizon.com' } });
+    if (!existing) {
+        throw new Error('admin@grandhorizon.com user not found');
+    }
+
     const amr = await p.user.update({
-        where: { tenantId_email: { tenantId: tenant.id, email: 'admin@grandhorizon.com' } },
+        where: { id: existing.id },
         data: {
             email: 'admin@admin.com',
             firstName: 'Amr',

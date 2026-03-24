@@ -53,11 +53,12 @@ const limiter = rateLimit({
 app.use('/api', limiter);
 
 const authLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 20,
+    windowMs: isDev ? 60 * 1000 : 15 * 60 * 1000,
+    max: isDev ? 1000 : 20,
+    skip: () => isDev, // Disable login throttling in development
     message: { success: false, message: 'Too many login attempts, please try again later.' },
 });
-app.use('/api/auth', authLimiter);
+app.use('/api/auth/login', authLimiter);
 
 // ─── Body Parsing ─────────────────────────────────────────────────────────
 app.use(express.json({ limit: '10mb' }));
