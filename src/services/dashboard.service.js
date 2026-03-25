@@ -446,4 +446,97 @@ const getChartData = async (tenantId) => {
     return { consumptionByMonth, deptBreakdown, topConsumed, lowStockData };
 };
 
-module.exports = { getDashboardSummary, getChartData };
+/**
+ * Per-branch metrics for org comparison (child tenants only).
+ * Inventory value matches executive dashboard (Σ qtyOnHand × wacUnitCost).
+ * Consumption: ISSUE ledger value for current calendar month.
+ * Waste: BREAKAGE ledger value for current month (MovementType has no LOSS; aligns with dashboard loss).
+ * Pending tasks: same pending definitions as operational health (transfers + GRNs + open stock counts).
+ */
+const aggregateBranchMetrics = async (tenantId, monthStart) => {
+    const [
+        inventoryRow,
+        consumptionRow,
+        wasteRow,
+        pendingTransfers,
+        pendingGrns,
+        pendingInventories,
+    ] = await Promise.all([
+        prisma.$queryRaw`
+            SELECT COALESCE(SUM("qtyOnHand" * "wacUnitCost"), 0)::float as "totalValue"
+            FROM stock_balances
+            WHERE "tenantId" = ${tenantId}::uuid
+        `,
+        prisma.$queryRaw`
+            SELECT COALESCE(SUM("qtyOut" * "unitCost"), 0)::float as "value"
+            FROM inventory_ledger
+            WHERE "tenantId" = ${tenantId}::uuid
+              AND "movementType" = 'ISSUE'
+              AND "createdAt" >= ${monthStart}
+        `,
+        prisma.$queryRaw`
+            SELECT COALESCE(SUM("qtyOut" * "unitCost"), 0)::float as "value"
+            FROM inventory_ledger
+            WHERE "tenantId" = ${tenantId}::uuid
+              AND "movementType" = 'BREAKAGE'
+              AND "createdAt" >= ${monthStart}
+        `,
+        prisma.storeTransfer.count({
+            where: {
+                tenantId,
+                status: { in: ['SUBMITTED', 'APPROVED', 'IN_TRANSIT'] },
+            },
+        }),
+        prisma.grnImport.count({
+            where: {
+                tenantId,
+                status: { in: ['DRAFT', 'VALIDATED', 'PENDING_APPROVAL'] },
+            },
+        }),
+        prisma.stockCountSession.count({
+            where: {
+                tenantId,
+                status: { in: ['DRAFT', 'PENDING_APPROVAL'] },
+            },
+        }),
+    ]);
+
+    return {
+        inventoryValue: Number(inventoryRow[0]?.totalValue || 0),
+        consumption: Number(consumptionRow[0]?.value || 0),
+        waste: Number(wasteRow[0]?.value || 0),
+        pendingTasks: pendingTransfers + pendingGrns + pendingInventories,
+    };
+};
+
+/**
+ * @param {string} parentTenantId — root organization tenant id (parentId must be null)
+ * @returns {Promise<Array<{ branchName: string, inventoryValue: number, consumption: number, waste: number, pendingTasks: number }>>}
+ */
+const getOrganizationSummary = async (parentTenantId) => {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const branches = await prisma.tenant.findMany({
+        where: { parentId: parentTenantId },
+        select: { id: true, name: true },
+        orderBy: { name: 'asc' },
+    });
+
+    const rows = await Promise.all(
+        branches.map(async (b) => {
+            const m = await aggregateBranchMetrics(b.id, monthStart);
+            return {
+                branchName: b.name,
+                inventoryValue: m.inventoryValue,
+                consumption: m.consumption,
+                waste: m.waste,
+                pendingTasks: m.pendingTasks,
+            };
+        }),
+    );
+
+    return rows;
+};
+
+module.exports = { getDashboardSummary, getChartData, getOrganizationSummary };
