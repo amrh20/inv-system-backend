@@ -5,9 +5,9 @@ const { authorize } = require('../middleware/authorize');
 
 const router = express.Router();
 
-// All tenant management routes are strictly for Super Admins
+// Tenant listing/creation supports hierarchy roles.
 router.use(authenticate);
-router.use(authorize('SUPER_ADMIN'));
+router.use(authorize('SUPER_ADMIN', 'ORG_MANAGER', 'ADMIN'));
 
 // GET /api/admin/tenants
 router.get('/', tenantController.listTenants);

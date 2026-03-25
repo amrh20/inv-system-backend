@@ -1,7 +1,8 @@
 const prisma = require('../config/database');
 const { hashPassword } = require('../utils/password');
+const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membershipGuard');
 
-const listTenants = async (query = {}) => {
+const listTenants = async (query = {}, userContext = null) => {
     const { page = 1, limit = 20, status, search } = query;
     const pageNum = Number(page) || 1;
     const limitNum = Number(limit) || 20;
@@ -13,6 +14,44 @@ const listTenants = async (query = {}) => {
     }
     if (search) {
         where.name = { contains: search, mode: 'insensitive' };
+    }
+
+    if (userContext && userContext.role !== 'SUPER_ADMIN') {
+        const memberships = await prisma.tenantMember.findMany({
+            where: {
+                userId: userContext.id,
+                isActive: true,
+                tenantId: { not: null },
+            },
+            select: { tenantId: true, role: true },
+        });
+
+        const orgTenantIds = memberships
+            .filter((membership) => membership.role === 'ORG_MANAGER')
+            .map((membership) => membership.tenantId)
+            .filter(Boolean);
+
+        let visibleTenantIds = [];
+        if (orgTenantIds.length > 0) {
+            const childTenants = await prisma.tenant.findMany({
+                where: { parentId: { in: orgTenantIds } },
+                select: { id: true },
+            });
+
+            visibleTenantIds = [
+                ...new Set([
+                    ...orgTenantIds,
+                    ...childTenants.map((tenant) => tenant.id),
+                ]),
+            ];
+        } else {
+            visibleTenantIds = memberships
+                .filter((membership) => membership.role === 'ADMIN')
+                .map((membership) => membership.tenantId)
+                .filter(Boolean);
+        }
+
+        where.id = { in: visibleTenantIds };
     }
 
     const [total, tenants] = await Promise.all([
@@ -53,15 +92,69 @@ const createTenant = async (data) => {
         throw Object.assign(new Error('Tenant name or slug already exists.'), { statusCode: 400 });
     }
 
-    // Create the tenant and its initial admin user in a transaction
+    if (!data.adminUser?.email) {
+        throw Object.assign(new Error('adminUser.email is required.'), { statusCode: 400 });
+    }
+
+    // Create organization/branch and attach initial memberships in one transaction.
     const result = await prisma.$transaction(async (tx) => {
-        // 1. Create Tenant
-        const newTenant = await tx.tenant.create({
+        const parentId = data.parentId || null;
+        let parentOrgManagerIds = [];
+        const isBranchCreation = Boolean(parentId);
+
+        if (parentId) {
+            const parentTenant = await tx.tenant.findUnique({
+                where: { id: parentId },
+                select: { id: true },
+            });
+            if (!parentTenant) {
+                throw Object.assign(new Error('Parent organization not found.'), { statusCode: 404 });
+            }
+
+            const parentOrgManagers = await tx.tenantMember.findMany({
+                where: {
+                    tenantId: parentId,
+                    role: 'ORG_MANAGER',
+                    isActive: true,
+                },
+                select: { userId: true },
+                distinct: ['userId'],
+            });
+
+            if (parentOrgManagers.length === 0) {
+                throw Object.assign(
+                    new Error('Parent organization must have at least one active ORG_MANAGER.'),
+                    { statusCode: 400 }
+                );
+            }
+
+            parentOrgManagerIds = parentOrgManagers.map((manager) => manager.userId);
+        }
+
+        if (isBranchCreation) {
+            const requiredFields = ['planType', 'status', 'maxUsers', 'licenseStartDate', 'licenseEndDate'];
+            const missingFields = requiredFields.filter((field) => {
+                const value = data[field];
+                return value === undefined || value === null || value === '';
+            });
+
+            if (missingFields.length > 0) {
+                throw Object.assign(
+                    new Error(`Missing required fields for branch creation: ${missingFields.join(', ')}`),
+                    { statusCode: 400 }
+                );
+            }
+        }
+
+        const statusValue = data.status ?? data.subStatus;
+
+        const tenant = await tx.tenant.create({
             data: {
                 name: data.name,
                 slug: data.slug,
+                parentId,
                 planType: data.planType || 'BASIC',
-                subStatus: data.subStatus || 'TRIAL',
+                subStatus: statusValue || 'TRIAL',
                 licenseStartDate: data.licenseStartDate ? new Date(data.licenseStartDate) : new Date(),
                 licenseEndDate: data.licenseEndDate ? new Date(data.licenseEndDate) : null,
                 maxUsers: Number(data.maxUsers) || 10,
@@ -69,37 +162,87 @@ const createTenant = async (data) => {
             }
         });
 
-        // 2. Create/attach the first Admin User
         const normalizedEmail = data.adminUser.email.toLowerCase();
         let adminUser = await tx.user.findUnique({ where: { email: normalizedEmail } });
         if (!adminUser) {
-            const adminPasswordHash = await hashPassword(data.adminUser.password);
+            if (!data.adminUser.password || !data.adminUser.firstName || !data.adminUser.lastName) {
+                throw Object.assign(
+                    new Error('firstName, lastName and password are required when creating a new branch admin user.'),
+                    { statusCode: 400 }
+                );
+            }
+
+            const passwordHash = await hashPassword(data.adminUser.password);
             adminUser = await tx.user.create({
                 data: {
                     email: normalizedEmail,
-                    passwordHash: adminPasswordHash,
+                    passwordHash,
                     firstName: data.adminUser.firstName,
                     lastName: data.adminUser.lastName,
-                    isActive: true
-                }
+                    phone: data.adminUser.phone || null,
+                    isActive: true,
+                },
             });
         }
 
-        await tx.tenantMember.upsert({
-            where: { tenantId_userId: { tenantId: newTenant.id, userId: adminUser.id } },
-            create: {
-                tenantId: newTenant.id,
-                userId: adminUser.id,
-                role: 'ADMIN',
-                isActive: true
-            },
-            update: {
-                role: 'ADMIN',
-                isActive: true
-            }
-        });
+        // Membership Guard: if this user is an ORG_MANAGER for another org,
+        // they must not be assigned outside their own org hierarchy.
+        await assertOrgManagerAssignmentWithinOrgHierarchy(tx, { userId: adminUser.id, targetTenantId: tenant.id });
 
-        return newTenant;
+        if (!parentId) {
+            // Top-level organization creation: initial user is ORG_MANAGER.
+            await tx.tenantMember.upsert({
+                where: { tenantId_userId: { tenantId: tenant.id, userId: adminUser.id } },
+                create: {
+                    tenantId: tenant.id,
+                    userId: adminUser.id,
+                    role: 'ORG_MANAGER',
+                    isActive: true,
+                },
+                update: {
+                    role: 'ORG_MANAGER',
+                    isActive: true,
+                },
+            });
+        } else {
+            // Branch creation:
+            // 1) Inherit parent org managers as ORG_MANAGER in this branch for visibility.
+            for (const orgManagerUserId of parentOrgManagerIds) {
+                await tx.tenantMember.upsert({
+                    where: { tenantId_userId: { tenantId: tenant.id, userId: orgManagerUserId } },
+                    create: {
+                        tenantId: tenant.id,
+                        userId: orgManagerUserId,
+                        role: 'ORG_MANAGER',
+                        isActive: true,
+                    },
+                    update: {
+                        role: 'ORG_MANAGER',
+                        isActive: true,
+                    },
+                });
+            }
+
+            // 2) Assign branch admin.
+            // If selected admin is already an inherited ORG_MANAGER, keep ORG_MANAGER role
+            // (single membership per tenant), while admin permissions are still covered.
+            const branchAdminRole = parentOrgManagerIds.includes(adminUser.id) ? 'ORG_MANAGER' : 'ADMIN';
+            await tx.tenantMember.upsert({
+                where: { tenantId_userId: { tenantId: tenant.id, userId: adminUser.id } },
+                create: {
+                    tenantId: tenant.id,
+                    userId: adminUser.id,
+                    role: branchAdminRole,
+                    isActive: true,
+                },
+                update: {
+                    role: branchAdminRole,
+                    isActive: true,
+                },
+            });
+        }
+
+        return tenant;
     });
 
     return result;

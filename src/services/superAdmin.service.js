@@ -3,6 +3,7 @@ const { hashPassword } = require('../utils/password');
 const { generateAccessToken } = require('../utils/jwt');
 const { invalidateTenantCache } = require('../middleware/subscription');
 const logger = require('../utils/logger');
+const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membershipGuard');
 
 // ─── Plan Defaults ────────────────────────────────────────────────────────────
 const PLAN_DEFAULTS = {
@@ -272,6 +273,9 @@ const createTenant = async (data, adminUserId, ipAddress) => {
                     },
                 });
             }
+
+            // Membership Guard: ORG_MANAGER users cannot be assigned outside their org hierarchy.
+            await assertOrgManagerAssignmentWithinOrgHierarchy(tx, { userId: adminUser.id, targetTenantId: t.id });
 
             await tx.tenantMember.upsert({
                 where: { tenantId_userId: { tenantId: t.id, userId: adminUser.id } },

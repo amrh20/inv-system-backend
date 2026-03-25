@@ -35,7 +35,7 @@ const createUserValidator = [
     body('firstName').optional().notEmpty().trim(),
     body('lastName').optional().notEmpty().trim(),
     body('role')
-        .isIn(['ADMIN', 'STOREKEEPER', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'])
+        .isIn(['ADMIN', 'ORG_MANAGER', 'STOREKEEPER', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'])
         .withMessage('Invalid role.'),
     body('departmentId').optional({ nullable: true }).isUUID().withMessage('departmentId must be a valid UUID.'),
     validate,
@@ -51,7 +51,7 @@ const updateUserValidator = [
 
 const updateRoleValidator = [
     body('role')
-        .isIn(['ADMIN', 'STOREKEEPER', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'])
+        .isIn(['ADMIN', 'ORG_MANAGER', 'STOREKEEPER', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'])
         .withMessage('Invalid role.'),
     validate,
 ];

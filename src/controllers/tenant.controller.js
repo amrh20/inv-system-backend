@@ -3,7 +3,7 @@ const { success, created } = require('../utils/response');
 
 const listTenants = async (req, res, next) => {
     try {
-        const result = await tenantService.listTenants(req.query);
+        const result = await tenantService.listTenants(req.query, req.user);
         return success(res, result.tenants, 'Tenants retrieved successfully', 200, {
             meta: {
                 page: result.page,
@@ -28,7 +28,10 @@ const getTenant = async (req, res, next) => {
 const createTenant = async (req, res, next) => {
     try {
         const tenant = await tenantService.createTenant(req.body);
-        return created(res, tenant, 'Tenant and Admin user created successfully');
+        const message = req.body?.parentId
+            ? 'Branch created successfully.'
+            : 'Organization created successfully.';
+        return created(res, tenant, message);
     } catch (err) {
         next(err);
     }

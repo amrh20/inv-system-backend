@@ -1,5 +1,6 @@
 const prisma = require('../config/database');
 const { hashPassword } = require('../utils/password');
+const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membershipGuard');
 
 /**
  * M01 — User Management Service (Admin operations)
@@ -177,6 +178,9 @@ const createUser = async (tenantId, data, requestingUserId) => {
                 },
             });
         } else {
+            // Membership Guard: ORG_MANAGER users cannot be assigned outside their org hierarchy.
+            await assertOrgManagerAssignmentWithinOrgHierarchy(tx, { userId: targetUser.id, targetTenantId: tenantId });
+
             const adminTenantIds = await getAdminTenantIds(tx, requestingUserId);
             if (adminTenantIds.length === 0) {
                 throw Object.assign(new Error('You are not authorized to import existing users.'), { statusCode: 403 });

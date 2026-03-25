@@ -9,7 +9,10 @@ const authorize = (...roles) => {
         }
 
         const normalizedRoles = roles.map(r => r.toUpperCase());
-        if (!normalizedRoles.includes(req.user.role.toUpperCase())) {
+        const userRole = req.user.role.toUpperCase();
+        const canActAsAdmin = userRole === 'ORG_MANAGER' && normalizedRoles.includes('ADMIN');
+
+        if (!normalizedRoles.includes(userRole) && !canActAsAdmin) {
             return res.status(403).json({
                 success: false,
                 message: `Access denied. Required role(s): ${roles.join(', ')}. Your role: ${req.user.role}`,
