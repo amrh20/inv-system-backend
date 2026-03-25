@@ -4,6 +4,41 @@ const logger = require('../utils/logger');
 const { enforcetenantScope } = require('./tenantScope');
 const { enforceSubscription } = require('./subscription');
 
+const getTenantSuspensionFromTokenContext = async (tenantId) => {
+    if (!tenantId) return null;
+
+    const tenant = await prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: {
+            id: true,
+            slug: true,
+            isActive: true,
+            subStatus: true,
+            adminStatus: true,
+            parentId: true,
+            parent: {
+                select: {
+                    id: true,
+                    isActive: true,
+                    subStatus: true,
+                    adminStatus: true,
+                },
+            },
+        },
+    });
+
+    if (!tenant) return { type: 'INVALID_TENANT', tenant: null };
+
+    // PRIORITY: parent org status takes precedence over child tenant status.
+    if (tenant.parent && (tenant.parent.adminStatus === 'SUSPENDED' || tenant.parent.isActive === false)) {
+        return { type: 'ORGANIZATION_SUSPENDED', tenant };
+    }
+
+    if (tenant.adminStatus === 'SUSPENDED') return { type: 'ACCOUNT_SUSPENDED', tenant };
+
+    return { type: null, tenant };
+};
+
 /**
  * M01 — Authentication Middleware (SaaS-enhanced)
  * 1) Verifies JWT access token and attaches user context to req.user
@@ -24,6 +59,27 @@ const authenticate = async (req, res, next) => {
 
     try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const suspension = await getTenantSuspensionFromTokenContext(decoded.tenantId);
+        if (decoded.tenantId && suspension?.tenant) {
+            console.log(
+                `Auth Check: User [${decoded.email || decoded.userId}] attempting access to Tenant [${suspension.tenant.slug}]. ParentId: [${suspension.tenant.parentId || 'null'}], AdminStatus: [${suspension.tenant.adminStatus}], ParentAdminStatus: [${suspension.tenant.parent?.adminStatus || 'N/A'}], SubStatus: [${suspension.tenant.subStatus}], ParentSubStatus: [${suspension.tenant.parent?.subStatus || 'N/A'}].`
+            );
+        }
+        if (suspension?.type === 'INVALID_TENANT') {
+            return res.status(401).json({
+                success: false,
+                message: 'Invalid token context.',
+            });
+        }
+        if (suspension?.type === 'ACCOUNT_SUSPENDED' || suspension?.type === 'ORGANIZATION_SUSPENDED') {
+            return res.status(403).json({
+                success: false,
+                code: suspension.type,
+                message: suspension.type === 'ORGANIZATION_SUSPENDED'
+                    ? 'This organization is suspended.'
+                    : 'This account is suspended.',
+            });
+        }
 
         let membership = await prisma.tenantMember.findFirst({
             where: {

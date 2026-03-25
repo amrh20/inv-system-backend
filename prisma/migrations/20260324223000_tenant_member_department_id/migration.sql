@@ -4,16 +4,23 @@ ALTER TABLE "tenant_members"
 
 DO $$
 BEGIN
-  IF NOT EXISTS (
+  -- Guard for shadow DB / legacy installs where "departments" may not exist yet.
+  IF EXISTS (
     SELECT 1
-    FROM pg_constraint
-    WHERE conname = 'tenant_members_departmentId_fkey'
+    FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'departments'
   ) THEN
-    ALTER TABLE "tenant_members"
-      ADD CONSTRAINT "tenant_members_departmentId_fkey"
-      FOREIGN KEY ("departmentId") REFERENCES "departments"("id")
-      ON DELETE SET NULL
-      ON UPDATE CASCADE;
+    IF NOT EXISTS (
+      SELECT 1
+      FROM pg_constraint
+      WHERE conname = 'tenant_members_departmentId_fkey'
+    ) THEN
+      ALTER TABLE "tenant_members"
+        ADD CONSTRAINT "tenant_members_departmentId_fkey"
+        FOREIGN KEY ("departmentId") REFERENCES "departments"("id")
+        ON DELETE SET NULL
+        ON UPDATE CASCADE;
+    END IF;
   END IF;
 END $$;
 

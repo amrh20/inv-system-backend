@@ -74,6 +74,114 @@ const searchExistingUsersValidator = [
     validate,
 ];
 
+// ─── Tenant Validators ───────────────────────────────────────────────────────
+const createTenantValidator = [
+    body('name').notEmpty().withMessage('name is required.').trim(),
+    body('slug').notEmpty().withMessage('slug is required.').trim(),
+    body('parentId').optional({ nullable: true }).isUUID().withMessage('parentId must be a valid UUID.'),
+    body('status')
+        .optional()
+        .isIn(['TRIAL', 'ACTIVE'])
+        .withMessage('status must be one of TRIAL, ACTIVE.'),
+    body('subStatus')
+        .optional()
+        .isIn(['TRIAL', 'ACTIVE'])
+        .withMessage('subStatus must be one of TRIAL, ACTIVE.'),
+    body().custom((value) => {
+        const isOrg = !value?.parentId;
+        const requestedSubStatus = value?.status ?? value?.subStatus;
+        if (isOrg && requestedSubStatus && requestedSubStatus !== 'ACTIVE') {
+            throw new Error('Organizations must be created with ACTIVE status.');
+        }
+        if (!isOrg) {
+            const subStatus = requestedSubStatus;
+            if (!subStatus) throw new Error('status is required for hotel creation.');
+            if (subStatus === 'TRIAL') {
+                // licenseEndDate will be calculated server-side if omitted
+                return true;
+            }
+        }
+        return true;
+    }),
+    body('maxUsers')
+        .optional()
+        .isInt({ min: 1 })
+        .withMessage('maxUsers must be a positive integer.'),
+    body('licenseStartDate').optional().isISO8601().withMessage('licenseStartDate must be a valid ISO date.'),
+    body('licenseEndDate').optional({ nullable: true }).isISO8601().withMessage('licenseEndDate must be a valid ISO date.'),
+    body('planType').optional().isIn(['BASIC', 'PRO', 'ENTERPRISE', 'CUSTOM']).withMessage('Invalid planType.'),
+    body('hasBranches').optional().isBoolean().withMessage('hasBranches must be boolean.'),
+    body('maxBranches').optional().isInt({ min: 0 }).withMessage('maxBranches must be a non-negative integer.'),
+    body('adminUser.email').isEmail().withMessage('adminUser.email is required.').normalizeEmail(),
+    body('adminUser.password').optional().isLength({ min: 8 }).withMessage('adminUser.password must be at least 8 characters.'),
+    body('adminUser.firstName').optional().notEmpty().trim(),
+    body('adminUser.lastName').optional().notEmpty().trim(),
+    validate,
+];
+
+const createSuperAdminTenantValidator = [
+    body('name').notEmpty().withMessage('name is required.').trim(),
+    body('slug').notEmpty().withMessage('slug is required.').trim(),
+    body('parentId').optional({ nullable: true }).isUUID().withMessage('parentId must be a valid UUID.'),
+    body('subStatus')
+        .optional()
+        .isIn(['TRIAL', 'ACTIVE'])
+        .withMessage('subStatus must be one of TRIAL, ACTIVE.'),
+    body().custom((value) => {
+        const isOrg = !value?.parentId;
+        const subStatus = value?.subStatus;
+        if (isOrg && subStatus && subStatus !== 'ACTIVE') {
+            throw new Error('Organizations must be created with ACTIVE subStatus.');
+        }
+        if (!isOrg) {
+            if (!subStatus) throw new Error('subStatus is required for hotel creation.');
+        }
+        return true;
+    }),
+    body('planType').optional().isIn(['BASIC', 'PRO', 'ENTERPRISE', 'CUSTOM']).withMessage('Invalid planType.'),
+    body('hasBranches').optional().isBoolean().withMessage('hasBranches must be boolean.'),
+    body('maxBranches').optional().isInt({ min: 0 }).withMessage('maxBranches must be a non-negative integer.'),
+    body('licenseStartDate').optional().isISO8601().withMessage('licenseStartDate must be a valid ISO date.'),
+    body('licenseEndDate').optional({ nullable: true }).isISO8601().withMessage('licenseEndDate must be a valid ISO date.'),
+    body('maxUsers').optional().isInt({ min: 1 }).withMessage('maxUsers must be a positive integer.'),
+    body('adminEmail').optional().isEmail().withMessage('adminEmail must be a valid email.').normalizeEmail(),
+    body('adminPassword').optional().isLength({ min: 8 }).withMessage('adminPassword must be at least 8 characters.'),
+    // Wizard / nested shape (alternative to flat adminEmail / adminPassword)
+    body('adminUser.email').optional().isEmail().withMessage('adminUser.email must be a valid email.').normalizeEmail(),
+    body('adminUser.password').optional().isLength({ min: 8 }).withMessage('adminUser.password must be at least 8 characters.'),
+    body('adminUser.firstName').optional().notEmpty().trim(),
+    body('adminUser.lastName').optional().notEmpty().trim(),
+    validate,
+];
+
+const createFullOrganizationValidator = [
+    // organization
+    body('organization.name').notEmpty().withMessage('organization.name is required.').trim(),
+    body('organization.slug').notEmpty().withMessage('organization.slug is required.').trim(),
+    body('organization.maxBranches').optional().isInt({ min: 0 }).withMessage('organization.maxBranches must be >= 0.'),
+    body('organization.email').optional().isEmail().withMessage('organization.email must be a valid email.').normalizeEmail(),
+    // admin user
+    body('adminUser.email').isEmail().withMessage('adminUser.email is required.').normalizeEmail(),
+    body('adminUser.password').isLength({ min: 8 }).withMessage('adminUser.password must be at least 8 characters.'),
+    body('adminUser.firstName').optional().notEmpty().trim(),
+    body('adminUser.lastName').optional().notEmpty().trim(),
+    // first hotel
+    body('hotel.name').notEmpty().withMessage('hotel.name is required.').trim(),
+    body('hotel.slug').notEmpty().withMessage('hotel.slug is required.').trim(),
+    body('hotel.subStatus').optional().isIn(['TRIAL', 'ACTIVE']).withMessage('hotel.subStatus must be TRIAL or ACTIVE.'),
+    body('hotel.planType').optional().isIn(['BASIC', 'PRO', 'ENTERPRISE', 'CUSTOM']).withMessage('Invalid hotel.planType.'),
+    body('hotel.maxUsers').optional().isInt({ min: 1 }).withMessage('hotel.maxUsers must be a positive integer.'),
+    body('hotel.licenseStartDate').optional().isISO8601().withMessage('hotel.licenseStartDate must be a valid ISO date.'),
+    body('hotel.licenseEndDate').optional({ nullable: true }).isISO8601().withMessage('hotel.licenseEndDate must be a valid ISO date.'),
+    body('hotel.trialDays').optional().isInt({ min: 1, max: 365 }).withMessage('hotel.trialDays must be between 1 and 365.'),
+    // Optional: distinct first-hotel admin (defaults to top-level adminUser when omitted)
+    body('hotel.adminUser.email').optional().isEmail().withMessage('hotel.adminUser.email must be a valid email.').normalizeEmail(),
+    body('hotel.adminUser.password').optional().isLength({ min: 8 }).withMessage('hotel.adminUser.password must be at least 8 characters.'),
+    body('hotel.adminUser.firstName').optional().notEmpty().trim(),
+    body('hotel.adminUser.lastName').optional().notEmpty().trim(),
+    validate,
+];
+
 module.exports = {
     validate,
     loginValidator,
@@ -83,4 +191,7 @@ module.exports = {
     updateRoleValidator,
     paginationValidator,
     searchExistingUsersValidator,
+    createTenantValidator,
+    createSuperAdminTenantValidator,
+    createFullOrganizationValidator,
 };

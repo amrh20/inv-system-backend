@@ -46,10 +46,13 @@ const resolveLicenseStartDateForUpdate = (licenseStartDate) => {
     return parseValidLicenseDate(licenseStartDate);
 };
 
-const resolveLicenseEndDateForCreate = (licenseEndDate, trialDays) => {
+const resolveLicenseEndDateForCreate = ({ licenseEndDate, subStatus, trialDays }) => {
     if (licenseEndDate === null || licenseEndDate === '') return null;
     if (licenseEndDate === undefined) {
-        return new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000);
+        if (subStatus === 'TRIAL') {
+            return new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000);
+        }
+        return null;
     }
     return parseValidLicenseDate(licenseEndDate);
 };
@@ -85,12 +88,16 @@ const getTenantUserIds = async (db, tenantId) => {
     return rows.map((row) => row.userId);
 };
 
-// ─── S1.1 — List Tenants ──────────────────────────────────────────────────────
+// ─── S1.1 — List Tenants (GET /api/super-admin/tenants) ─────────────────────
+/** Hierarchical roots + children; includes `adminStatus` for org/branch suspension UI. */
 const listTenants = async ({ page = 1, limit = 20, search, status } = {}) => {
     const pageNum = Number(page) || 1;
     const limitNum = Number(limit) || 20;
+    const skip = (pageNum - 1) * limitNum;
 
-    const where = {};
+    // CRITICAL: super-admin tenant list is hierarchical.
+    // Only fetch root organizations and include their direct child hotels.
+    const where = { parentId: null };
     if (search) {
         where.OR = [
             { name: { contains: search, mode: 'insensitive' } },
@@ -101,40 +108,75 @@ const listTenants = async ({ page = 1, limit = 20, search, status } = {}) => {
         where.subStatus = status;
     }
 
-    const tenants = await prisma.tenant.findMany({
+    const countQuery = { where };
+    const findManyQuery = {
         where,
         orderBy: { createdAt: 'desc' },
-        include: {
-            parent: { select: { name: true } },
+        skip,
+        take: limitNum,
+        select: {
+            id: true,
+            name: true,
+            slug: true,
+            email: true,
+            parentId: true, // always null for roots, included for consistency
+            isActive: true,
+            planType: true,
+            subStatus: true,
+            adminStatus: true,
+            licenseStartDate: true,
+            licenseEndDate: true,
+            maxUsers: true,
+            hasBranches: true,
+            maxBranches: true,
+            createdAt: true,
+            updatedAt: true,
             _count: { select: { memberships: true, locations: true } },
+            children: {
+                orderBy: { createdAt: 'desc' },
+                select: {
+                    id: true,
+                    name: true,
+                    slug: true,
+                    email: true,
+                    parentId: true,
+                    isActive: true,
+                    planType: true,
+                    subStatus: true,
+                    adminStatus: true,
+                    licenseStartDate: true,
+                    licenseEndDate: true,
+                    maxUsers: true,
+                    hasBranches: true,
+                    maxBranches: true,
+                    createdAt: true,
+                    updatedAt: true,
+                    _count: { select: { memberships: true, locations: true } },
+                },
+            },
         },
-    });
+    };
+
+    const [total, roots] = await Promise.all([
+        prisma.tenant.count(countQuery),
+        prisma.tenant.findMany(findManyQuery),
+    ]);
 
     const toTenantRow = (tenant) => ({
         ...tenant,
         email: tenant.email || null,
-        parentName: tenant.parent?.name || null,
+        parentName: null,
         usersCount: tenant._count?.memberships || 0,
     });
 
-    const tenantRows = tenants.map(toTenantRow);
-    const roots = tenantRows.filter((tenant) => !tenant.parentId);
-    const branchesByParentId = new Map();
-
-    for (const tenant of tenantRows) {
-        if (!tenant.parentId) continue;
-        const parentBranches = branchesByParentId.get(tenant.parentId) || [];
-        parentBranches.push(tenant);
-        branchesByParentId.set(tenant.parentId, parentBranches);
-    }
-
-    const total = roots.length;
-    const skip = (pageNum - 1) * limitNum;
-    const paginatedRoots = roots.slice(skip, skip + limitNum);
-    const rows = paginatedRoots.map((root) => ({
-        ...root,
-        branches: branchesByParentId.get(root.id) || [],
+    const rows = roots.map((root) => ({
+        ...toTenantRow(root),
+        branches: (root.children || []).map(toTenantRow),
     }));
+
+    console.log('[SUPER_ADMIN][listTenants] Prisma where:', JSON.stringify(where));
+    console.log('[SUPER_ADMIN][listTenants] Prisma findMany query:', JSON.stringify(findManyQuery));
+    console.log('[SUPER_ADMIN][listTenants] Result count:', rows.length, 'Total:', total);
 
     return { data: rows, total, page: pageNum, limit: limitNum };
 };
@@ -170,13 +212,18 @@ const createTenant = async (data, adminUserId, ipAddress) => {
         licenseStartDate,
         licenseEndDate,
         maxUsers,
-        adminEmail,
-        adminPassword,
-        adminFirstName = 'Admin',
-        adminLastName,
+        // Legacy flat fields (optional if adminUser is nested)
+        adminFirstName: flatAdminFirstName,
+        adminLastName: flatAdminLastName,
         // Legacy support
-        trialDays = 30,
+        trialDays = 14,
     } = data;
+
+    const nestedAdmin = data.adminUser;
+    const adminEmail = nestedAdmin?.email || data.adminEmail;
+    const adminPassword = nestedAdmin?.password || data.adminPassword;
+    const adminFirstName = nestedAdmin?.firstName || flatAdminFirstName || 'Admin';
+    const adminLastName = nestedAdmin?.lastName || flatAdminLastName;
 
     // Check uniqueness
     const existing = await prisma.tenant.findFirst({
@@ -191,7 +238,9 @@ const createTenant = async (data, adminUserId, ipAddress) => {
 
     const limits = PLAN_DEFAULTS[planType] || PLAN_DEFAULTS.BASIC;
     let resolvedParentId = null;
-    let resolvedHasBranches = Boolean(hasBranches);
+    // Root orgs should allow hotels by default unless explicitly disabled.
+    const defaultHasBranchesForRoot = hasBranches === undefined ? true : Boolean(hasBranches);
+    let resolvedHasBranches = defaultHasBranchesForRoot;
     let resolvedMaxBranches = Number(maxBranches) || 0;
 
     // Parent/child hierarchy rules:
@@ -224,10 +273,23 @@ const createTenant = async (data, adminUserId, ipAddress) => {
         resolvedMaxBranches = 0;
     }
 
-    const startDate = resolveLicenseStartDateForCreate(licenseStartDate);
-    // Lifetime license when null/empty string; fallback to trial only when not provided.
-    const endDate = resolveLicenseEndDateForCreate(licenseEndDate, trialDays);
-    validateLicenseDateRange(startDate, endDate);
+    const isOrgCreation = !resolvedParentId;
+
+    // Organizations don't have trials (always ACTIVE).
+    const resolvedSubStatus = isOrgCreation ? 'ACTIVE' : subStatus;
+    const resolvedAdminStatus = 'ACTIVE';
+
+    // Root org creation: strip/ignore subscription fields entirely.
+    const resolvedPlanType = isOrgCreation ? 'BASIC' : planType;
+    const resolvedStartDate = isOrgCreation ? new Date() : resolveLicenseStartDateForCreate(licenseStartDate);
+    // Lifetime license when null/empty string; trial auto-end-date only when TRIAL.
+    const resolvedEndDate = isOrgCreation
+        ? null
+        : resolveLicenseEndDateForCreate({ licenseEndDate, subStatus: resolvedSubStatus, trialDays });
+    const resolvedMaxUsers = isOrgCreation
+        ? (PLAN_DEFAULTS.BASIC?.maxUsers ?? 5)
+        : (maxUsers !== undefined ? Number(maxUsers) : limits.maxUsers);
+    validateLicenseDateRange(resolvedStartDate, resolvedEndDate);
 
     const tenant = await prisma.$transaction(async (tx) => {
         // 1. Create Tenant
@@ -236,19 +298,20 @@ const createTenant = async (data, adminUserId, ipAddress) => {
                 name,
                 slug,
                 email: email !== undefined ? email : (adminEmail ? adminEmail.toLowerCase() : null),
-                parentId: resolvedParentId,
+                ...(resolvedParentId ? { parent: { connect: { id: resolvedParentId } } } : {}),
                 hasBranches: resolvedHasBranches,
                 maxBranches: resolvedMaxBranches,
-                planType,
-                subStatus,
-                licenseStartDate: startDate,
-                licenseEndDate: endDate,
-                maxUsers: maxUsers !== undefined ? Number(maxUsers) : limits.maxUsers,
+                planType: resolvedPlanType,
+                subStatus: resolvedSubStatus,
+                adminStatus: resolvedAdminStatus,
+                licenseStartDate: resolvedStartDate,
+                licenseEndDate: resolvedEndDate,
+                maxUsers: resolvedMaxUsers,
                 isActive: true,
             },
         });
 
-        // 2. Create first Admin user
+        // 2. First hotel admin: explicit payload, or inherit from parent org's ORG_MANAGER
         if (adminEmail) {
             const normalizedAdminEmail = adminEmail.toLowerCase();
             let adminUser = await tx.user.findUnique({
@@ -290,6 +353,45 @@ const createTenant = async (data, adminUserId, ipAddress) => {
                     isActive: true,
                 },
             });
+        } else if (resolvedParentId) {
+            const orgManagerMembership = await tx.tenantMember.findFirst({
+                where: {
+                    tenantId: resolvedParentId,
+                    role: 'ORG_MANAGER',
+                    isActive: true,
+                    user: { isActive: true },
+                },
+                orderBy: { createdAt: 'asc' },
+                select: { userId: true },
+            });
+
+            if (!orgManagerMembership) {
+                throw Object.assign(
+                    new Error('No active organization manager found for the parent organization.'),
+                    { statusCode: 400 }
+                );
+            }
+
+            await assertOrgManagerAssignmentWithinOrgHierarchy(tx, {
+                userId: orgManagerMembership.userId,
+                targetTenantId: t.id,
+            });
+
+            await tx.tenantMember.upsert({
+                where: {
+                    tenantId_userId: { tenantId: t.id, userId: orgManagerMembership.userId },
+                },
+                create: {
+                    tenantId: t.id,
+                    userId: orgManagerMembership.userId,
+                    role: 'ADMIN',
+                    isActive: true,
+                },
+                update: {
+                    role: 'ADMIN',
+                    isActive: true,
+                },
+            });
         }
 
         return t;
@@ -297,6 +399,209 @@ const createTenant = async (data, adminUserId, ipAddress) => {
 
     await logAdminAction(adminUserId, 'TENANT_CREATED', tenant.id, { name, slug, planType }, ipAddress);
     return tenant;
+};
+
+// ─── S1.3b — Create Full Organization (Org + Admin + First Hotel) ─────────────
+const createFullOrganization = async (payload, adminUserId, ipAddress) => {
+    const org = payload?.organization || payload?.org || payload || {};
+    const hotel = payload?.hotel || payload?.firstHotel || payload || {};
+    const orgAdminPayload = payload?.adminUser || payload?.admin || {};
+
+    const orgName = org.name ?? payload?.orgName;
+    const orgSlug = org.slug ?? payload?.orgSlug;
+    const orgEmail = org.email ?? payload?.orgEmail ?? null;
+    const maxBranches = org.maxBranches ?? payload?.maxBranches ?? 0;
+
+    const adminEmail = orgAdminPayload.email ?? payload?.adminEmail;
+    const adminPassword = orgAdminPayload.password ?? payload?.adminPassword;
+    const adminFirstName = orgAdminPayload.firstName ?? payload?.adminFirstName ?? 'Admin';
+    const adminLastName = orgAdminPayload.lastName ?? payload?.adminLastName ?? orgName;
+
+    const hotelAdminPayload = hotel.adminUser || orgAdminPayload;
+
+    const hotelName = hotel.name ?? payload?.hotelName ?? payload?.firstHotelName;
+    const hotelSlug = hotel.slug ?? payload?.hotelSlug ?? payload?.firstHotelSlug;
+    const hotelAdminEmailResolved = hotelAdminPayload.email ?? adminEmail;
+    const hotelEmail = hotel.email ?? payload?.hotelEmail ?? (hotelAdminEmailResolved ? String(hotelAdminEmailResolved).toLowerCase() : null);
+    const hotelPlanType = hotel.planType ?? payload?.planType ?? 'BASIC';
+    const hotelSubStatus = hotel.subStatus ?? payload?.subStatus ?? 'TRIAL';
+    const trialDays = Number(hotel.trialDays ?? payload?.trialDays) || 14;
+    const hotelMaxUsers = hotel.maxUsers ?? payload?.maxUsers;
+    const hotelLicenseStartDate = hotel.licenseStartDate ?? payload?.licenseStartDate;
+    const hotelLicenseEndDate = hotel.licenseEndDate ?? payload?.licenseEndDate;
+
+    if (!orgName || !orgSlug) {
+        throw Object.assign(new Error('organization.name and organization.slug are required.'), { statusCode: 400 });
+    }
+    if (!hotelName || !hotelSlug) {
+        throw Object.assign(new Error('hotel.name and hotel.slug are required.'), { statusCode: 400 });
+    }
+    if (!adminEmail || !adminPassword) {
+        throw Object.assign(new Error('adminUser.email and adminUser.password are required.'), { statusCode: 400 });
+    }
+    if (!['TRIAL', 'ACTIVE'].includes(hotelSubStatus)) {
+        throw Object.assign(new Error('hotel.subStatus must be TRIAL or ACTIVE.'), { statusCode: 400 });
+    }
+
+    // Pre-check uniqueness early for clearer errors.
+    const existing = await prisma.tenant.findFirst({
+        where: { OR: [{ slug: orgSlug }, { name: orgName }, { slug: hotelSlug }, { name: hotelName }] },
+        select: { id: true, slug: true, name: true },
+    });
+    if (existing) {
+        throw Object.assign(new Error('Tenant name or slug already exists.'), { statusCode: 409 });
+    }
+
+    const hotelAdminPassword = hotelAdminPayload.password ?? adminPassword;
+    const hotelAdminFirstName = hotelAdminPayload.firstName ?? adminFirstName;
+    const hotelAdminLastName = hotelAdminPayload.lastName ?? adminLastName ?? hotelName;
+
+    const created = await prisma.$transaction(async (tx) => {
+        const findOrCreateUser = async ({
+            email: rawEmail,
+            password,
+            firstName: fn,
+            lastName: ln,
+            nameFallback,
+        }) => {
+            const normalized = String(rawEmail).toLowerCase();
+            let u = await tx.user.findUnique({ where: { email: normalized } });
+            if (!u) {
+                if (!password) {
+                    throw Object.assign(
+                        new Error('Password is required when creating a new admin user.'),
+                        { statusCode: 400 }
+                    );
+                }
+                u = await tx.user.create({
+                    data: {
+                        email: normalized,
+                        passwordHash: await hashPassword(password),
+                        firstName: fn || 'Admin',
+                        lastName: ln || nameFallback,
+                        isActive: true,
+                    },
+                });
+            }
+            return u;
+        };
+
+        // 1) Create Parent Organization (force hasBranches=true)
+        const orgTenant = await tx.tenant.create({
+            data: {
+                name: orgName,
+                slug: orgSlug,
+                email: orgEmail,
+                hasBranches: true,
+                maxBranches: Number(maxBranches) || 0,
+                planType: 'BASIC',
+                subStatus: 'ACTIVE',
+                adminStatus: 'ACTIVE',
+                licenseStartDate: new Date(),
+                licenseEndDate: null,
+                maxUsers: PLAN_DEFAULTS.BASIC?.maxUsers ?? 5,
+                isActive: true,
+            },
+        });
+
+        const normalizedOrgEmail = String(adminEmail).toLowerCase();
+        const normalizedHotelEmail = String(hotelAdminEmailResolved).toLowerCase();
+        const separateHotelAdmin = normalizedOrgEmail !== normalizedHotelEmail;
+
+        // 2) Organization manager user (always org admin credentials)
+        const orgManagerUser = await findOrCreateUser({
+            email: adminEmail,
+            password: adminPassword,
+            firstName: adminFirstName,
+            lastName: adminLastName,
+            nameFallback: orgName,
+        });
+
+        // 3) Create First Hotel linked to Parent ID
+        const hotelStartDate = resolveLicenseStartDateForCreate(hotelLicenseStartDate);
+        const hotelEndDate = resolveLicenseEndDateForCreate({
+            licenseEndDate: hotelLicenseEndDate,
+            subStatus: hotelSubStatus,
+            trialDays,
+        });
+        validateLicenseDateRange(hotelStartDate, hotelEndDate);
+
+        const hotelLimits = PLAN_DEFAULTS[hotelPlanType] || PLAN_DEFAULTS.BASIC;
+        const hotelTenant = await tx.tenant.create({
+            data: {
+                name: hotelName,
+                slug: hotelSlug,
+                email: hotelEmail,
+                parent: { connect: { id: orgTenant.id } },
+                hasBranches: false,
+                maxBranches: 0,
+                planType: hotelPlanType,
+                subStatus: hotelSubStatus,
+                adminStatus: 'ACTIVE',
+                licenseStartDate: hotelStartDate,
+                licenseEndDate: hotelEndDate,
+                maxUsers: hotelMaxUsers !== undefined ? Number(hotelMaxUsers) : hotelLimits.maxUsers,
+                isActive: true,
+            },
+        });
+
+        // 4) Memberships: org manager on org; hotel admin on hotel (second user when emails differ)
+        await tx.tenantMember.upsert({
+            where: { tenantId_userId: { tenantId: orgTenant.id, userId: orgManagerUser.id } },
+            create: { tenantId: orgTenant.id, userId: orgManagerUser.id, role: 'ORG_MANAGER', isActive: true },
+            update: { role: 'ORG_MANAGER', isActive: true },
+        });
+
+        if (separateHotelAdmin) {
+            const hotelAdminUser = await findOrCreateUser({
+                email: hotelAdminEmailResolved,
+                password: hotelAdminPassword,
+                firstName: hotelAdminFirstName,
+                lastName: hotelAdminLastName,
+                nameFallback: hotelName,
+            });
+
+            await tx.tenantMember.upsert({
+                where: { tenantId_userId: { tenantId: hotelTenant.id, userId: hotelAdminUser.id } },
+                create: { tenantId: hotelTenant.id, userId: hotelAdminUser.id, role: 'ADMIN', isActive: true },
+                update: { role: 'ADMIN', isActive: true },
+            });
+
+            return {
+                organization: orgTenant,
+                hotel: hotelTenant,
+                adminUser: orgManagerUser,
+                hotelAdminUser,
+            };
+        }
+
+        await assertOrgManagerAssignmentWithinOrgHierarchy(tx, {
+            userId: orgManagerUser.id,
+            targetTenantId: hotelTenant.id,
+        });
+
+        await tx.tenantMember.upsert({
+            where: { tenantId_userId: { tenantId: hotelTenant.id, userId: orgManagerUser.id } },
+            create: { tenantId: hotelTenant.id, userId: orgManagerUser.id, role: 'ADMIN', isActive: true },
+            update: { role: 'ADMIN', isActive: true },
+        });
+
+        return {
+            organization: orgTenant,
+            hotel: hotelTenant,
+            adminUser: orgManagerUser,
+            hotelAdminUser: orgManagerUser,
+        };
+    });
+
+    await logAdminAction(adminUserId, 'TENANT_CREATED', created.organization.id, {
+        kind: 'FULL_ORG_SETUP',
+        organization: { name: orgName, slug: orgSlug },
+        hotel: { name: hotelName, slug: hotelSlug, subStatus: hotelSubStatus },
+        maxBranches,
+    }, ipAddress);
+
+    return created;
 };
 
 // ─── S1.4 — Update Tenant Info ────────────────────────────────────────────────
@@ -437,7 +742,7 @@ const activateTenant = async (tenantId, adminUserId, ipAddress) => {
 
     const updated = await prisma.tenant.update({
         where: { id: tenantId },
-        data: { isActive: true, subStatus: 'ACTIVE' },
+        data: { adminStatus: 'ACTIVE', isActive: true },
     });
 
     invalidateTenantCache(tenantId);
@@ -454,7 +759,7 @@ const suspendTenant = async (tenantId, adminUserId, ipAddress) => {
         // 1. Mark tenant as suspended
         await tx.tenant.update({
             where: { id: tenantId },
-            data: { isActive: false, subStatus: 'SUSPENDED' },
+            data: { adminStatus: 'SUSPENDED' },
         });
 
         // 2. Revoke all active refresh tokens for this tenant's users
@@ -600,6 +905,7 @@ module.exports = {
     listTenants,
     getTenant,
     createTenant,
+    createFullOrganization,
     updateTenant,
     activateTenant,
     suspendTenant,

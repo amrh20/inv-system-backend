@@ -55,10 +55,20 @@ const toggleTenant = async (req, res, next) => {
     }
 };
 
+const suspendTenant = async (req, res, next) => {
+    try {
+        const tenant = await tenantService.suspendTenant(req.params.id);
+        return success(res, tenant, 'Organization suspended successfully', 200);
+    } catch (err) {
+        next(err);
+    }
+};
+
 module.exports = {
     listTenants,
     getTenant,
     createTenant,
     updateTenant,
-    toggleTenant
+    toggleTenant,
+    suspendTenant
 };

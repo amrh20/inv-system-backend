@@ -3,7 +3,8 @@
  *
  * Runs AFTER authenticate on every tenant API request (except /api/auth & /api/admin).
  * Checks:
- *  1. Subscription status (EXPIRED → 402, SUSPENDED → 403)
+ *  1. Administrative status (SUSPENDED → 403) and active flag (inactive → 403)
+ *  2. Subscription status for hotels (EXPIRED → 402)
  *  2. Trial expiry (402)
  *  3. Plan limits on mutating requests (maxUsers, maxStores, maxMonthlyMovements)
  *  4. Read-only impersonation token blocks writes
@@ -38,7 +39,7 @@ const enforceSubscription = async (req, res, next) => {
     try {
         const tenant = await getCachedTenantInfo(tenantId);
 
-        if (!tenant || !tenant.isActive) {
+        if (!tenant) {
             return res.status(403).json({
                 success: false,
                 code: 'TENANT_INACTIVE',
@@ -46,17 +47,39 @@ const enforceSubscription = async (req, res, next) => {
             });
         }
 
-        // 1. Check SUSPENDED
-        if (tenant.subStatus === 'SUSPENDED') {
+        // 1. Check admin suspension (self)
+        if (tenant.adminStatus === 'SUSPENDED') {
             return res.status(403).json({
                 success: false,
-                code: 'TENANT_SUSPENDED',
-                message: 'Your account has been suspended. Please contact support.',
+                code: 'ACCOUNT_SUSPENDED',
+                message: 'ACCOUNT_SUSPENDED',
             });
         }
 
-        // 2. Check EXPIRED
-        if (tenant.subStatus === 'EXPIRED') {
+        // 1b. Check parent organization suspension (hierarchical suspend)
+        // PRIORITY: if parent exists, parent status must be evaluated before returning TENANT_INACTIVE
+        // to ensure UI consistently shows ORGANIZATION_SUSPENDED for child tenants.
+        if (tenant.parentId) {
+            const parentTenant = await getCachedTenantInfo(tenant.parentId);
+            if (parentTenant && (parentTenant.adminStatus === 'SUSPENDED' || parentTenant.isActive === false)) {
+                return res.status(403).json({
+                    success: false,
+                    code: 'ORGANIZATION_SUSPENDED',
+                    message: 'ORGANIZATION_SUSPENDED',
+                });
+            }
+        }
+
+        if (!tenant.isActive) {
+            return res.status(403).json({
+                success: false,
+                code: 'TENANT_INACTIVE',
+                message: 'Your tenant account is inactive. Please contact support.',
+            });
+        }
+
+        // 2. Check EXPIRED (hotels only: child tenants)
+        if (tenant.parentId && tenant.subStatus === 'EXPIRED') {
             return res.status(402).json({
                 success: false,
                 code: 'SUBSCRIPTION_EXPIRED',
@@ -71,11 +94,13 @@ const enforceSubscription = async (req, res, next) => {
                 data: { subStatus: 'EXPIRED' },
             });
             invalidateTenantCache(tenantId);
-            return res.status(402).json({
-                success: false,
-                code: 'SUBSCRIPTION_EXPIRED',
-                message: 'Your subscription has expired. Please renew to continue.',
-            });
+            if (tenant.parentId) {
+                return res.status(402).json({
+                    success: false,
+                    code: 'SUBSCRIPTION_EXPIRED',
+                    message: 'Your subscription has expired. Please renew to continue.',
+                });
+            }
         }
 
         // 5. Check read-only impersonation token

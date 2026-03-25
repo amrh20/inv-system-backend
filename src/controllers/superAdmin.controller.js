@@ -3,6 +3,8 @@ const superAdminService = require('../services/superAdmin.service');
 // ─── List Tenants ─────────────────────────────────────────────────────────────
 const listTenants = async (req, res, next) => {
     try {
+        console.log('[SUPER_ADMIN][listTenants] Request URL:', req.originalUrl);
+        console.log('[SUPER_ADMIN][listTenants] Query params:', req.query);
         const result = await superAdminService.listTenants(req.query);
         res.json({ success: true, data: result });
     } catch (e) { next(e); }
@@ -21,6 +23,14 @@ const createTenant = async (req, res, next) => {
     try {
         const tenant = await superAdminService.createTenant(req.body, req.user.id, req.ip);
         res.status(201).json({ success: true, data: tenant });
+    } catch (e) { next(e); }
+};
+
+// ─── Create Full Organization (Org + Admin + First Hotel) ─────────────────────
+const createFullOrganization = async (req, res, next) => {
+    try {
+        const result = await superAdminService.createFullOrganization(req.body, req.user.id, req.ip);
+        res.status(201).json({ success: true, data: result });
     } catch (e) { next(e); }
 };
 
@@ -84,6 +94,7 @@ module.exports = {
     listTenants,
     getTenant,
     createTenant,
+    createFullOrganization,
     updateTenant,
     activateTenant,
     suspendTenant,

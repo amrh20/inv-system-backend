@@ -132,7 +132,7 @@ const createTenant = async (data) => {
         }
 
         if (isBranchCreation) {
-            const requiredFields = ['planType', 'status', 'maxUsers', 'licenseStartDate', 'licenseEndDate'];
+            const requiredFields = ['status', 'maxUsers'];
             const missingFields = requiredFields.filter((field) => {
                 const value = data[field];
                 return value === undefined || value === null || value === '';
@@ -146,18 +146,44 @@ const createTenant = async (data) => {
             }
         }
 
+        const isOrgCreation = !parentId;
         const statusValue = data.status ?? data.subStatus;
+        const normalizedSubStatus = isOrgCreation ? 'ACTIVE' : (statusValue || 'TRIAL');
+        const normalizedAdminStatus = 'ACTIVE';
+
+        let resolvedLicenseEndDate = data.licenseEndDate ? new Date(data.licenseEndDate) : null;
+        if (!isOrgCreation && normalizedSubStatus === 'TRIAL') {
+            // Hotels only: default trial duration is 14 days if not explicitly provided.
+            if (!data.licenseEndDate) {
+                resolvedLicenseEndDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+            }
+        }
+
+        // Root orgs should allow hotels by default unless explicitly disabled.
+        const resolvedHasBranches = isOrgCreation
+            ? (data.hasBranches === undefined ? true : Boolean(data.hasBranches))
+            : false;
+        const resolvedMaxBranches = isOrgCreation ? (Number(data.maxBranches) || 0) : 0;
+
+        const resolvedPlanType = isOrgCreation ? 'BASIC' : (data.planType || 'BASIC');
+        const resolvedMaxUsers = isOrgCreation ? 10 : (Number(data.maxUsers) || 10);
+        const resolvedLicenseStartDate = isOrgCreation
+            ? new Date()
+            : (data.licenseStartDate ? new Date(data.licenseStartDate) : new Date());
 
         const tenant = await tx.tenant.create({
             data: {
                 name: data.name,
                 slug: data.slug,
-                parentId,
-                planType: data.planType || 'BASIC',
-                subStatus: statusValue || 'TRIAL',
-                licenseStartDate: data.licenseStartDate ? new Date(data.licenseStartDate) : new Date(),
-                licenseEndDate: data.licenseEndDate ? new Date(data.licenseEndDate) : null,
-                maxUsers: Number(data.maxUsers) || 10,
+                ...(parentId ? { parent: { connect: { id: parentId } } } : {}),
+                planType: resolvedPlanType,
+                subStatus: normalizedSubStatus,
+                adminStatus: normalizedAdminStatus,
+                licenseStartDate: resolvedLicenseStartDate,
+                licenseEndDate: isOrgCreation ? null : resolvedLicenseEndDate,
+                maxUsers: resolvedMaxUsers,
+                hasBranches: resolvedHasBranches,
+                maxBranches: resolvedMaxBranches,
                 isActive: true
             }
         });
@@ -279,6 +305,59 @@ const toggleTenantStatus = async (id) => {
     return updated;
 };
 
+/**
+ * Suspends a root organization: sets adminStatus to SUSPENDED (operational ban).
+ * subStatus (TRIAL/ACTIVE) is the subscription/license label and is intentionally unchanged.
+ */
+const suspendTenant = async (id) => {
+    const now = new Date();
+
+    const result = await prisma.$transaction(async (tx) => {
+        const tenant = await tx.tenant.findUnique({
+            where: { id },
+            select: { id: true, parentId: true },
+        });
+        if (!tenant) throw Object.assign(new Error('Tenant not found.'), { statusCode: 404 });
+        if (tenant.parentId) {
+            throw Object.assign(new Error('Only root organizations can be suspended.'), { statusCode: 400 });
+        }
+
+        const updatedOrg = await tx.tenant.update({
+            where: { id },
+            data: { adminStatus: 'SUSPENDED' },
+        });
+
+        const children = await tx.tenant.findMany({
+            where: { parentId: id },
+            select: { id: true },
+        });
+
+        const tenantIds = [id, ...children.map((c) => c.id)];
+
+        const members = await tx.tenantMember.findMany({
+            where: {
+                tenantId: { in: tenantIds },
+                isActive: true,
+                user: { isActive: true },
+            },
+            select: { userId: true },
+            distinct: ['userId'],
+        });
+
+        const userIds = members.map((m) => m.userId);
+        if (userIds.length > 0) {
+            await tx.refreshToken.updateMany({
+                where: { userId: { in: userIds }, revokedAt: null },
+                data: { revokedAt: now },
+            });
+        }
+
+        return updatedOrg;
+    });
+
+    return result;
+};
+
 const getTenantById = async (id) => {
     const tenant = await prisma.tenant.findUnique({
         where: { id },
@@ -296,5 +375,6 @@ module.exports = {
     createTenant,
     updateTenantLicense,
     toggleTenantStatus,
+    suspendTenant,
     getTenantById
 };

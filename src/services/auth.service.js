@@ -48,6 +48,7 @@ const buildInheritedOrgManagerMemberships = async (activeMemberships) => {
                 slug: true,
                 parentId: true,
                 isActive: true,
+                subStatus: true,
             },
         });
 
@@ -75,6 +76,41 @@ const buildInheritedOrgManagerMemberships = async (activeMemberships) => {
     }
 
     return mergedMemberships;
+};
+
+const buildSuspensionError = (code) => Object.assign(new Error(code), { statusCode: 403, code });
+const logAuthCheck = ({ email, tenant }) => {
+    if (!tenant) return;
+    const parentAdminStatus = tenant.parent?.adminStatus || 'N/A';
+    const parentSubStatus = tenant.parent?.subStatus || 'N/A';
+    console.log(
+        `Auth Check: User [${email}] attempting access to Tenant [${tenant.slug}]. ParentId: [${tenant.parentId || 'null'}], AdminStatus: [${tenant.adminStatus}], ParentAdminStatus: [${parentAdminStatus}], SubStatus: [${tenant.subStatus}], ParentSubStatus: [${parentSubStatus}].`
+    );
+};
+
+const ensureTenantNotSuspended = async (tenantId) => {
+    if (!tenantId) return;
+
+    const tenant = await prisma.tenant.findUnique({
+        where: { id: tenantId },
+        select: { id: true, parentId: true, adminStatus: true, subStatus: true, isActive: true },
+    });
+
+    if (!tenant) return;
+
+    if (tenant.adminStatus === 'SUSPENDED') {
+        throw buildSuspensionError('ACCOUNT_SUSPENDED');
+    }
+
+    if (tenant.parentId) {
+        const parent = await prisma.tenant.findUnique({
+            where: { id: tenant.parentId },
+            select: { id: true, adminStatus: true, isActive: true },
+        });
+        if (parent && parent.adminStatus === 'SUSPENDED') {
+            throw buildSuspensionError('ORGANIZATION_SUSPENDED');
+        }
+    }
 };
 
 const issueSessionForMembership = async ({
@@ -184,12 +220,55 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
     }
 
     const inheritedOrMergedMemberships = await buildInheritedOrgManagerMemberships(activeMemberships);
-    const activeMembershipsWithInheritance = inheritedOrMergedMemberships.length > 0
+    let activeMembershipsWithInheritance = inheritedOrMergedMemberships.length > 0
         ? inheritedOrMergedMemberships
         : activeMemberships;
 
+    // Filter out suspended tenants (self) and tenants under suspended organizations.
+    const tenantIds = [
+        ...new Set(activeMembershipsWithInheritance.map((m) => m.tenantId).filter(Boolean)),
+    ];
+    let suspensionFailureCode = null;
+    if (tenantIds.length > 0) {
+        const tenants = await prisma.tenant.findMany({
+            where: { id: { in: tenantIds } },
+            select: { id: true, parentId: true, adminStatus: true, subStatus: true, isActive: true },
+        });
+        const tenantById = new Map(tenants.map((t) => [t.id, t]));
+        const parentIds = [...new Set(tenants.map((t) => t.parentId).filter(Boolean))];
+        const parents = parentIds.length > 0
+            ? await prisma.tenant.findMany({
+                where: { id: { in: parentIds } },
+                select: { id: true, adminStatus: true, isActive: true },
+            })
+            : [];
+        const parentById = new Map(parents.map((p) => [p.id, p]));
+
+        activeMembershipsWithInheritance = activeMembershipsWithInheritance.filter((m) => {
+            if (!m.tenantId) return true;
+            const t = tenantById.get(m.tenantId);
+            if (!t || !t.isActive) return false;
+            if (t.adminStatus === 'SUSPENDED') {
+                suspensionFailureCode = suspensionFailureCode || 'ACCOUNT_SUSPENDED';
+                return false;
+            }
+            if (t.parentId) {
+                const p = parentById.get(t.parentId);
+                if (p && p.adminStatus === 'SUSPENDED') {
+                    suspensionFailureCode = 'ORGANIZATION_SUSPENDED';
+                    return false;
+                }
+            }
+            return true;
+        });
+    }
+
     const normalizedTenantSlug = typeof tenantSlug === 'string' ? tenantSlug.trim() : '';
     const totalMemberships = activeMembershipsWithInheritance.length;
+
+    if (totalMemberships === 0 && suspensionFailureCode) {
+        throw buildSuspensionError(suspensionFailureCode);
+    }
 
     if (totalMemberships > 1 && !normalizedTenantSlug) {
         console.log('DEBUG: Triggering Tenant Selection Response');
@@ -210,6 +289,36 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
     }
 
     if (normalizedTenantSlug) {
+        // CRITICAL SECURITY: on explicit tenant login attempt, always evaluate
+        // both tenant and parent suspension status before any role checks.
+        const attemptedTenant = await prisma.tenant.findFirst({
+            where: { slug: normalizedTenantSlug },
+            select: {
+                id: true,
+                slug: true,
+                parentId: true,
+                subStatus: true,
+                adminStatus: true,
+                parent: {
+                    select: {
+                        id: true,
+                        subStatus: true,
+                        adminStatus: true,
+                    },
+                },
+            },
+        });
+
+        if (attemptedTenant) {
+            logAuthCheck({ email: user.email, tenant: attemptedTenant });
+            if (attemptedTenant.adminStatus === 'SUSPENDED') {
+                throw buildSuspensionError('ACCOUNT_SUSPENDED');
+            }
+            if (attemptedTenant.parent?.adminStatus === 'SUSPENDED') {
+                throw buildSuspensionError('ORGANIZATION_SUSPENDED');
+            }
+        }
+
         const selectedMembership = activeMembershipsWithInheritance
             .find((membership) => membership.tenant?.slug === normalizedTenantSlug);
         if (!selectedMembership) {
@@ -225,6 +334,8 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
             throw buildAccountInactiveError();
         }
 
+        await ensureTenantNotSuspended(selectedMembership.tenantId);
+
         const result = await issueSessionForMembership({
             user,
             membership: selectedMembership,
@@ -237,6 +348,21 @@ const login = async ({ email, password, tenantSlug, ipAddress, userAgent }) => {
 
     if (totalMemberships === 1) {
         const selected = activeMembershipsWithInheritance[0];
+        if (selected?.tenantId) {
+            const selectedTenant = await prisma.tenant.findUnique({
+                where: { id: selected.tenantId },
+                select: {
+                    id: true,
+                    slug: true,
+                    parentId: true,
+                    subStatus: true,
+                    adminStatus: true,
+                    parent: { select: { id: true, subStatus: true, adminStatus: true } },
+                },
+            });
+            logAuthCheck({ email: user.email, tenant: selectedTenant });
+        }
+        await ensureTenantNotSuspended(selected.tenantId);
         const result = await issueSessionForMembership({ user, membership: selected, ipAddress, userAgent });
         logger.info(`User logged in: ${user.email} [tenant: ${selected.tenant?.slug || 'super-admin'}]`);
         return result;
@@ -330,6 +456,20 @@ const refresh = async (refreshToken) => {
 
     if (!membership) {
         throw Object.assign(new Error('Refresh token context is no longer valid.'), { statusCode: 401 });
+    }
+
+    // Block refresh if tenant is suspended or parent org is suspended.
+    if (membership.tenantId) {
+        try {
+            await ensureTenantNotSuspended(membership.tenantId);
+        } catch (err) {
+            // Revoke the presented refresh token to force logout.
+            await prisma.refreshToken.updateMany({
+                where: { token: refreshToken, revokedAt: null },
+                data: { revokedAt: new Date() },
+            });
+            throw err;
+        }
     }
 
     const newAccessToken = generateAccessToken({
@@ -426,12 +566,15 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
             slug: normalizedTenantSlug,
             isActive: true,
         },
-        select: { id: true, slug: true, name: true, parentId: true },
+        select: { id: true, slug: true, name: true, parentId: true, subStatus: true },
     });
 
     if (!targetTenant) {
         throw Object.assign(new Error('You are not authorized for this tenant.'), { statusCode: 403 });
     }
+
+    // Block switching to suspended tenant/org hierarchy with distinct codes.
+    await ensureTenantNotSuspended(targetTenant.id);
 
     // Strict switch guard:
     // If user is an ORG_MANAGER of any root org, they may only switch to that org

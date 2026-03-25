@@ -20,7 +20,8 @@ model Tenant {
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
   planType          PlanType            @default(BASIC)
-  subStatus         SubscriptionStatus  @default(TRIAL)
+  subStatus         TenantSubStatus     @default(TRIAL)
+  adminStatus       TenantAdminStatus   @default(ACTIVE)
   licenseStartDate  DateTime            @default(now())
   licenseEndDate    DateTime?
   maxUsers          Int                 @default(10)
@@ -1173,6 +1174,16 @@ enum SubscriptionStatus {
   ACTIVE
   TRIAL
   EXPIRED
+}
+
+enum TenantSubStatus {
+  TRIAL
+  ACTIVE
+  EXPIRED
+}
+
+enum TenantAdminStatus {
+  ACTIVE
   SUSPENDED
 }
 
