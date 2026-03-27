@@ -35,7 +35,7 @@ const createUserValidator = [
     body('firstName').optional().notEmpty().trim(),
     body('lastName').optional().notEmpty().trim(),
     body('role')
-        .isIn(['ADMIN', 'ORG_MANAGER', 'STOREKEEPER', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'])
+        .isIn(['ADMIN', 'ORG_MANAGER', 'STOREKEEPER', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR', 'SECURITY'])
         .withMessage('Invalid role.'),
     body('departmentId').optional({ nullable: true }).isUUID().withMessage('departmentId must be a valid UUID.'),
     validate,
@@ -45,13 +45,17 @@ const updateUserValidator = [
     body('firstName').optional().notEmpty().trim(),
     body('lastName').optional().notEmpty().trim(),
     body('password').optional().isLength({ min: 8 }).withMessage('Password must be at least 8 characters.'),
+    body('role')
+        .optional()
+        .isIn(['ADMIN', 'ORG_MANAGER', 'STOREKEEPER', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR', 'SECURITY'])
+        .withMessage('Invalid role.'),
     body('isActive').optional().isBoolean(),
     validate,
 ];
 
 const updateRoleValidator = [
     body('role')
-        .isIn(['ADMIN', 'ORG_MANAGER', 'STOREKEEPER', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'])
+        .isIn(['ADMIN', 'ORG_MANAGER', 'STOREKEEPER', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR', 'SECURITY'])
         .withMessage('Invalid role.'),
     validate,
 ];

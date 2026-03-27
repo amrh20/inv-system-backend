@@ -1,6 +1,10 @@
 const prisma = require('../config/database');
 const { hashPassword } = require('../utils/password');
 const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membershipGuard');
+const {
+    countActiveSeats,
+    assertSingletonRoleAvailable,
+} = require('../utils/tenantMemberActive');
 
 /**
  * M01 — User Management Service (Admin operations)
@@ -55,9 +59,7 @@ const listUsers = async (tenantId, { page = 1, limit = 20, role, isActive, searc
             skip,
             take: limitNum,
         }),
-        prisma.tenantMember.count({
-            where: { tenantId, isActive: true },
-        }),
+        countActiveSeats(prisma, tenantId),
         prisma.tenant.findUnique({
             where: { id: tenantId },
             select: { maxUsers: true },
@@ -209,13 +211,17 @@ const createUser = async (tenantId, data, requestingUserId) => {
         const willConsumeNewSeat = !existingMembership || !existingMembership.isActive;
 
         if (willConsumeNewSeat) {
-            const activeMembersCount = await tx.tenantMember.count({
-                where: { tenantId, isActive: true },
-            });
+            const activeMembersCount = await countActiveSeats(tx, tenantId);
             if (activeMembersCount >= tenant.maxUsers) {
                 throw Object.assign(new Error('Maximum user limit reached for this hotel.'), { statusCode: 400 });
             }
         }
+
+        await assertSingletonRoleAvailable(tx, {
+            tenantId,
+            role: data.role,
+            excludeUserId: targetUser.id,
+        });
 
         await tx.tenantMember.upsert({
             where: { tenantId_userId: { tenantId, userId: targetUser.id } },
@@ -283,10 +289,23 @@ const updateUser = async (tenantId, userId, data) => {
         });
 
         let updatedMembership = membership;
-        if (data.isActive !== undefined) {
+        const membershipUpdate = {};
+        if (data.isActive !== undefined) membershipUpdate.isActive = data.isActive;
+        if (data.role !== undefined) membershipUpdate.role = data.role;
+        const nextMembershipActive =
+            data.isActive !== undefined ? Boolean(data.isActive) : membership.isActive;
+        const willBeEffectivelyActive = nextMembershipActive && membership.user.isActive;
+        if (data.role !== undefined && willBeEffectivelyActive) {
+            await assertSingletonRoleAvailable(tx, {
+                tenantId,
+                role: data.role,
+                excludeUserId: userId,
+            });
+        }
+        if (Object.keys(membershipUpdate).length > 0) {
             updatedMembership = await tx.tenantMember.update({
                 where: { tenantId_userId: { tenantId, userId } },
-                data: { isActive: data.isActive },
+                data: membershipUpdate,
                 include: { user: true },
             });
         }
@@ -315,9 +334,18 @@ const updateUserRole = async (tenantId, userId, role, requestingUserId) => {
 
     const membership = await prisma.tenantMember.findUnique({
         where: { tenantId_userId: { tenantId, userId } },
+        include: { user: { select: { isActive: true } } },
     });
     if (!membership) {
         throw Object.assign(new Error('User not found.'), { statusCode: 404 });
+    }
+
+    if (membership.isActive && membership.user.isActive) {
+        await assertSingletonRoleAvailable(prisma, {
+            tenantId,
+            role,
+            excludeUserId: userId,
+        });
     }
 
     const updated = await prisma.tenantMember.update({

@@ -2,31 +2,32 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/authenticate');
+const { requirePermission } = require('../middleware/authorize');
 const ctrl = require('../controllers/grn.controller');
 
 router.use(authenticate);
 
 // ── Excel Template & Import Preview (no file needed for template) ──
-router.get('/template', ctrl.downloadTemplate);
-router.post('/import/preview', ctrl.uploadExcel, ctrl.previewExcel);
-router.post('/import/pdf-preview', ctrl.uploadPdf, ctrl.previewPdf);
+router.get('/template', requirePermission('GRN_MANAGE'), ctrl.downloadTemplate);
+router.post('/import/preview', requirePermission('GRN_MANAGE'), ctrl.uploadExcel, ctrl.previewExcel);
+router.post('/import/pdf-preview', requirePermission('GRN_MANAGE'), ctrl.uploadPdf, ctrl.previewPdf);
 
 // ── Create GRN (multipart: invoice file + JSON body) ──
-router.post('/', ctrl.uploadInvoice, ctrl.createGrn);
+router.post('/', requirePermission('GRN_MANAGE'), ctrl.uploadInvoice, ctrl.createGrn);
 
 // ── List & Detail ──
-router.get('/', ctrl.listGrns);
-router.get('/:id', ctrl.getGrn);
+router.get('/', requirePermission('GRN_VIEW'), ctrl.listGrns);
+router.get('/:id', requirePermission('GRN_VIEW'), ctrl.getGrn);
 
 // ── State Machine ──
-router.post('/:id/validate', ctrl.validateGrn);
-router.post('/:id/submit', ctrl.submitGrn);
-router.post('/:id/approve', ctrl.approveGrn);
-router.post('/:id/reject', ctrl.rejectGrn);
-router.post('/:id/post', ctrl.postGrn);
+router.post('/:id/validate', requirePermission('GRN_MANAGE'), ctrl.validateGrn);
+router.post('/:id/submit', requirePermission('GRN_MANAGE'), ctrl.submitGrn);
+router.post('/:id/approve', requirePermission('GRN_MANAGE'), ctrl.approveGrn);
+router.post('/:id/reject', requirePermission('GRN_MANAGE'), ctrl.rejectGrn);
+router.post('/:id/post', requirePermission('GRN_MANAGE'), ctrl.postGrn);
 
 // ── Mutations ──
-router.patch('/:id', ctrl.updateGrn);
-router.delete('/:id', ctrl.deleteGrn);
+router.patch('/:id', requirePermission('GRN_MANAGE'), ctrl.updateGrn);
+router.delete('/:id', requirePermission('GRN_MANAGE'), ctrl.deleteGrn);
 
 module.exports = router;

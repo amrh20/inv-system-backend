@@ -1,7 +1,7 @@
 const express = require('express');
 const usersController = require('../controllers/users.controller');
 const { authenticate } = require('../middleware/authenticate');
-const { authorize } = require('../middleware/authorize');
+const { requirePermission } = require('../middleware/authorize');
 const {
     createUserValidator,
     updateUserValidator,
@@ -15,22 +15,22 @@ const router = express.Router();
 // All users routes require authentication
 router.use(authenticate);
 
-// GET /api/users  — Admin only
-router.get('/', authorize('ADMIN'), paginationValidator, usersController.listUsers);
+// GET /api/users
+router.get('/', requirePermission('USERS_COMPANY_MANAGE'), paginationValidator, usersController.listUsers);
 
-// GET /api/users/search-existing  — Admin only
-router.get('/search-existing', authorize('ADMIN'), searchExistingUsersValidator, usersController.searchExistingUsers);
+// GET /api/users/search-existing
+router.get('/search-existing', requirePermission('USERS_COMPANY_MANAGE'), searchExistingUsersValidator, usersController.searchExistingUsers);
 
-// GET /api/users/:id  — Admin only
-router.get('/:id', authorize('ADMIN'), usersController.getUser);
+// GET /api/users/:id
+router.get('/:id', requirePermission('USERS_COMPANY_MANAGE'), usersController.getUser);
 
-// POST /api/users  — Admin only
-router.post('/', authorize('ADMIN'), createUserValidator, usersController.createUser);
+// POST /api/users
+router.post('/', requirePermission('USERS_COMPANY_MANAGE'), createUserValidator, usersController.createUser);
 
-// PUT /api/users/:id  — Admin or self (controller enforces self-edit limits)
-router.put('/:id', authorize('ADMIN'), updateUserValidator, usersController.updateUser);
+// PUT /api/users/:id — controller enforces self-edit limits where applicable
+router.put('/:id', requirePermission('USERS_COMPANY_MANAGE'), updateUserValidator, usersController.updateUser);
 
-// PUT /api/users/:id/role  — Admin only
-router.put('/:id/role', authorize('ADMIN'), updateRoleValidator, usersController.updateUserRole);
+// PUT /api/users/:id/role
+router.put('/:id/role', requirePermission('USERS_COMPANY_MANAGE'), updateRoleValidator, usersController.updateUserRole);
 
 module.exports = router;

@@ -2,25 +2,23 @@ const express = require('express');
 const router = express.Router();
 const getPassController = require('../controllers/getPass.controller');
 const { authenticate: protect } = require('../middleware/authenticate');
-const { authorize } = require('../middleware/authorize');
+const { requirePermission } = require('../middleware/authorize');
 
 router.use(protect);
-// Allow all roles involved in Get Pass workflow to access the base endpoints
-router.use(authorize('ADMIN', 'STOREKEEPER', 'DEPT_MANAGER', 'FINANCE_MANAGER', 'SECURITY_MANAGER', 'AUDITOR', 'COST_CONTROL'));
 
 // Basic CRUD
-router.post('/', getPassController.createGetPass);
-router.get('/', getPassController.getGetPasses);
-router.get('/:id', getPassController.getGetPassById);
-router.put('/:id', getPassController.updateGetPass);
-router.delete('/:id', getPassController.deleteGetPass);
-router.get('/:id/pdf', getPassController.exportPdf);
+router.post('/', requirePermission('GET_PASS_CREATE'), getPassController.createGetPass);
+router.get('/', requirePermission('GET_PASS_VIEW'), getPassController.getGetPasses);
+router.get('/:id', requirePermission('GET_PASS_VIEW'), getPassController.getGetPassById);
+router.put('/:id', requirePermission('GET_PASS_CREATE'), getPassController.updateGetPass);
+router.delete('/:id', requirePermission('GET_PASS_CREATE'), getPassController.deleteGetPass);
+router.get('/:id/pdf', requirePermission('GET_PASS_VIEW'), getPassController.exportPdf);
 
 // Workflow Actions
-router.post('/:id/submit', getPassController.submitGetPass);
-router.post('/:id/approve', getPassController.approveGetPass);
-router.post('/:id/checkout', getPassController.checkoutGetPass);
-router.post('/:id/return', getPassController.returnGetPass);
-router.post('/:id/close', getPassController.closeGetPass);
+router.post('/:id/submit', requirePermission('GET_PASS_CREATE'), getPassController.submitGetPass);
+router.post('/:id/approve', requirePermission('GET_PASS_APPROVE'), getPassController.approveGetPass);
+router.post('/:id/checkout', requirePermission('GET_PASS_APPROVE_EXIT'), getPassController.checkoutGetPass);
+router.post('/:id/return', requirePermission('GET_PASS_APPROVE_RETURN'), getPassController.returnGetPass);
+router.post('/:id/close', requirePermission('GET_PASS_APPROVE_RETURN'), getPassController.closeGetPass);
 
 module.exports = router;

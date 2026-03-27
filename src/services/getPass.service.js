@@ -3,6 +3,7 @@ const prisma = new PrismaClient();
 const { generateDocNumber } = require('./docNumbering.service');
 const { logAction, EntityType } = require('./auditTrail.service');
 const { checkPeriodLock } = require('./periodGuard.service');
+const { hasPermission } = require('../middleware/authorize');
 
 const createGetPass = async (tenantId, data, userId) => {
     return prisma.$transaction(async (tx) => {
@@ -174,17 +175,23 @@ const approveGetPass = async (id, tenantId, user, action, notes) => {
     const updateData = {};
 
     if (getPass.status === 'PENDING_DEPT') {
-        if (user.role !== 'DEPT_MANAGER' && user.role !== 'ADMIN' && user.role !== 'SUPER_ADMIN') throw new Error('Unauthorized for Dept Approval');
+        if (!(user.role === 'SUPER_ADMIN' || hasPermission(user.role, 'ISSUE_APPROVE'))) {
+            throw new Error('Unauthorized for Dept Approval');
+        }
         nextStatus = 'PENDING_FINANCE';
         updateData.deptApprovedBy = user.id;
         updateData.deptApprovedAt = new Date();
     } else if (getPass.status === 'PENDING_FINANCE') {
-        if (user.role !== 'FINANCE_MANAGER' && user.role !== 'ADMIN' && user.role !== 'SUPER_ADMIN') throw new Error('Unauthorized for Finance Approval');
+        if (!(user.role === 'SUPER_ADMIN' || hasPermission(user.role, 'ISSUE_APPROVE'))) {
+            throw new Error('Unauthorized for Finance Approval');
+        }
         nextStatus = 'PENDING_SECURITY';
         updateData.financeApprovedBy = user.id;
         updateData.financeApprovedAt = new Date();
     } else if (getPass.status === 'PENDING_SECURITY') {
-        if (user.role !== 'SECURITY_MANAGER' && user.role !== 'ADMIN' && user.role !== 'SUPER_ADMIN') throw new Error('Unauthorized for Security Approval');
+        if (!(user.role === 'SUPER_ADMIN' || hasPermission(user.role, 'GET_PASS_APPROVE'))) {
+            throw new Error('Unauthorized for Security Approval');
+        }
         nextStatus = 'APPROVED';
         updateData.securityApprovedBy = user.id;
         updateData.securityApprovedAt = new Date();
@@ -201,7 +208,7 @@ const approveGetPass = async (id, tenantId, user, action, notes) => {
  * Marks Get Pass as OUT. Deducts from StockBalance. Writes to InventoryLedger.
  */
 const checkoutGetPass = async (id, tenantId, user, linesOut) => {
-    if (user.role !== 'SECURITY_MANAGER' && user.role !== 'ADMIN') throw new Error('Only Security can checkout items');
+    if (!hasPermission(user.role, 'GET_PASS_APPROVE_EXIT')) throw new Error('Only Security can checkout items');
 
     const getPass = await getGetPassById(id, tenantId);
     if (getPass.status !== 'APPROVED') throw new Error('Get Pass must be APPROVED before checkout');

@@ -23,6 +23,9 @@ const listUsers = async (req, res) => {
             totalPages: Math.ceil(result.total / result.limit),
             maxUsers: result.maxUsers,
             totalActiveUsers: result.totalActiveUsers,
+            // UI: status toggle confirmation — plan slots count active users only.
+            deactivateFreesPlanSlotHint:
+                'Deactivating this user will free up a slot in your current plan.',
         },
     });
 };

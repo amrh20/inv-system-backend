@@ -1160,7 +1160,7 @@ enum UserRole {
   COST_CONTROL
   FINANCE_MANAGER
   AUDITOR
-  SECURITY_MANAGER
+  SECURITY
 }
 
 enum PlanType {

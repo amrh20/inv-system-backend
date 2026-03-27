@@ -2,6 +2,7 @@ const prisma = require('../config/database');
 const { hashPassword, comparePassword } = require('../utils/password');
 const { generateAccessToken, generateRefreshToken, verifyRefreshToken, getRefreshTokenExpiry } = require('../utils/jwt');
 const logger = require('../utils/logger');
+const { getPermissionsForRole } = require('../middleware/authorize');
 
 /**
  * M01 — Auth Service
@@ -152,6 +153,7 @@ const issueSessionForMembership = async ({
             firstName: user.firstName,
             lastName: user.lastName,
             role: membership.role,
+            permissions: getPermissionsForRole(membership.role),
             department: user.department,
             tenantId: membership.tenantId,
             tenantName: membership.tenant?.name || null,
@@ -533,6 +535,7 @@ const getMe = async (userId, tenantId) => {
     return {
         ...user,
         role: membership.role,
+        permissions: getPermissionsForRole(membership.role),
         tenant: membership.tenant || null,
     };
 };
@@ -614,9 +617,9 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
     }
 
     let membership = directMembership;
-    let inheritedOrgManagerAccess = false;
 
-    if (targetTenant.parentId) {
+    // Only inherit ORG_MANAGER role when there is no direct active membership in target tenant.
+    if (!membership && targetTenant.parentId) {
         const parentOrgMembership = await prisma.tenantMember.findFirst({
             where: {
                 userId,
@@ -629,7 +632,6 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
         });
 
         if (parentOrgMembership) {
-            inheritedOrgManagerAccess = true;
             membership = {
                 tenantId: targetTenant.id,
                 role: 'ORG_MANAGER',
@@ -642,16 +644,6 @@ const switchTenant = async ({ userId, tenantSlug, ipAddress, userAgent }) => {
 
     if (!membership) {
         throw Object.assign(new Error('You are not authorized for this tenant.'), { statusCode: 403 });
-    }
-
-    if (inheritedOrgManagerAccess) {
-        membership = {
-            ...membership,
-            role: 'ORG_MANAGER',
-            tenant: membership.tenant || targetTenant,
-            isInherited: true,
-            isActive: true,
-        };
     }
 
     const result = await issueSessionForMembership({

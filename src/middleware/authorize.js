@@ -8,8 +8,8 @@ const authorize = (...roles) => {
             return res.status(401).json({ success: false, message: 'Authentication required.' });
         }
 
-        const normalizedRoles = roles.map(r => r.toUpperCase());
-        const userRole = req.user.role.toUpperCase();
+        const normalizedRoles = roles.map(r => normalizeRole(r));
+        const userRole = normalizeRole(req.user.role);
         const canActAsAdmin = userRole === 'ORG_MANAGER' && normalizedRoles.includes('ADMIN');
 
         if (!normalizedRoles.includes(userRole) && !canActAsAdmin) {
@@ -24,50 +24,95 @@ const authorize = (...roles) => {
 };
 
 /**
- * Permission matrix — defines what each role can do
- * Used for fine-grained checks beyond simple role matching
+ * Canonical permission matrix (Excel-aligned)
  */
 const PERMISSIONS = {
-    // Master data
-    MANAGE_MASTER_DATA: ['ADMIN'],
-    VIEW_MASTER_DATA: ['ADMIN', 'STOREKEEPER', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'],
+    BASIC_DATA_EDIT: ['ADMIN'],
+    BASIC_DATA_VIEW: ['ADMIN', 'STOREKEEPER', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'],
 
-    // Generic inventory read/write (used by M08, M10)
-    MANAGE_INVENTORY: ['ADMIN', 'STOREKEEPER', 'DEPT_MANAGER'],
-    VIEW_INVENTORY: ['ADMIN', 'STOREKEEPER', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'],
+    INVENTORY_VIEW: ['ADMIN', 'STOREKEEPER', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'],
+    MOVEMENT_CREATE: ['ADMIN', 'STOREKEEPER'],
+    ISSUE_CREATE: ['ADMIN', 'STOREKEEPER', 'DEPT_MANAGER'],
+    ISSUE_APPROVE: ['ADMIN', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER'],
+    TRANSFER_CREATE: ['ADMIN', 'STOREKEEPER'],
+    TRANSFER_APPROVE: ['ADMIN', 'DEPT_MANAGER', 'FINANCE_MANAGER'],
+    TRANSFER_DISPATCH_RECEIVE: ['ADMIN', 'STOREKEEPER'],
 
-    // Movements (no approval)
-    CREATE_MOVEMENT: ['ADMIN', 'STOREKEEPER'],
-    CREATE_ISSUE: ['ADMIN', 'STOREKEEPER', 'DEPT_MANAGER'],
-    VIEW_MOVEMENTS: ['ADMIN', 'STOREKEEPER', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'],
+    GRN_VIEW: ['ADMIN', 'STOREKEEPER', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'],
+    GRN_MANAGE: ['ADMIN', 'STOREKEEPER'],
 
-    // Controlled movements
-    CREATE_BREAKAGE: ['ADMIN', 'STOREKEEPER', 'DEPT_MANAGER'],
-    CREATE_ADJUSTMENT: ['ADMIN', 'STOREKEEPER'],
+    BREAKAGE_CREATE: ['ADMIN', 'STOREKEEPER', 'DEPT_MANAGER'],
+    ADJUSTMENT_CREATE: ['ADMIN', 'STOREKEEPER'],
+    BREAKAGE_APPROVE_REJECT: ['ADMIN', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER'],
 
-    // Approvals — any of the 3 approver roles + ADMIN can call approve/reject
-    APPROVE_BREAKAGE: ['ADMIN', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER'],
+    STOCK_COUNT_MANAGE: ['ADMIN', 'STOREKEEPER'],
+    STOCK_COUNT_VIEW: ['ADMIN', 'STOREKEEPER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'],
 
-    // Stock count
-    MANAGE_COUNT: ['ADMIN', 'STOREKEEPER'],
-    VIEW_COUNT: ['ADMIN', 'STOREKEEPER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'],
+    REPORTS_VIEW: ['ADMIN', 'STOREKEEPER', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'],
+    REPORTS_EXPORT: ['ADMIN', 'STOREKEEPER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'],
 
-    // Reports
-    VIEW_REPORTS: ['ADMIN', 'STOREKEEPER', 'DEPT_MANAGER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'],
-    EXPORT_REPORTS: ['ADMIN', 'STOREKEEPER', 'COST_CONTROL', 'FINANCE_MANAGER', 'AUDITOR'],
+    GET_PASS_CREATE: ['ADMIN', 'STOREKEEPER'],
+    GET_PASS_VIEW: ['ADMIN', 'STOREKEEPER', 'SECURITY', 'FINANCE_MANAGER', 'AUDITOR'],
+    GET_PASS_APPROVE: ['ADMIN', 'SECURITY'],
+    GET_PASS_APPROVE_EXIT: ['ADMIN', 'SECURITY'],
+    GET_PASS_APPROVE_RETURN: ['ADMIN', 'SECURITY'],
 
-    // Admin only
-    MANAGE_USERS: ['ADMIN'],
-    MANAGE_SETTINGS: ['ADMIN'],
-    VIEW_AUDIT_LOG: ['ADMIN', 'AUDITOR', 'FINANCE_MANAGER', 'SECURITY_MANAGER'],
-    MANAGE_IMPORTS: ['ADMIN', 'STOREKEEPER'],
+    IMPORT_CREATE: ['ADMIN', 'STOREKEEPER'],
+    IMPORT_EXCEL: ['ADMIN', 'STOREKEEPER'],
 
-    // Get Pass (Asset Loans) — approval workflow
-    CREATE_GET_PASS: ['ADMIN', 'STOREKEEPER'],
-    VIEW_GET_PASS: ['ADMIN', 'STOREKEEPER', 'SECURITY_MANAGER', 'FINANCE_MANAGER', 'AUDITOR'],
-    APPROVE_GET_PASS_EXIT:   ['SECURITY_MANAGER', 'ADMIN'],   // last approval before items leave
-    APPROVE_GET_PASS_RETURN: ['SECURITY_MANAGER', 'ADMIN'],   // first to confirm items arrived back
-    REGISTER_GET_PASS_RETURN: ['ADMIN', 'STOREKEEPER'],       // store mgr registers the physical return
+    USERS_COMPANY_MANAGE: ['ADMIN'],
+    SETTINGS_MANAGE: ['ADMIN'],
+    AUDIT_LOG_VIEW: ['ADMIN', 'FINANCE_MANAGER', 'AUDITOR', 'SECURITY'],
+};
+
+// Backward compatibility for existing routes still using old keys.
+const PERMISSION_ALIASES = {
+    MANAGE_MASTER_DATA: 'BASIC_DATA_EDIT',
+    VIEW_MASTER_DATA: 'BASIC_DATA_VIEW',
+    MANAGE_INVENTORY: 'MOVEMENT_CREATE',
+    VIEW_INVENTORY: 'INVENTORY_VIEW',
+    CREATE_MOVEMENT: 'MOVEMENT_CREATE',
+    CREATE_ISSUE: 'ISSUE_CREATE',
+    VIEW_MOVEMENTS: 'INVENTORY_VIEW',
+    CREATE_BREAKAGE: 'BREAKAGE_CREATE',
+    CREATE_ADJUSTMENT: 'ADJUSTMENT_CREATE',
+    APPROVE_BREAKAGE: 'BREAKAGE_APPROVE_REJECT',
+    MANAGE_COUNT: 'STOCK_COUNT_MANAGE',
+    VIEW_COUNT: 'STOCK_COUNT_VIEW',
+    VIEW_REPORTS: 'REPORTS_VIEW',
+    EXPORT_REPORTS: 'REPORTS_EXPORT',
+    MANAGE_USERS: 'USERS_COMPANY_MANAGE',
+    MANAGE_SETTINGS: 'SETTINGS_MANAGE',
+    VIEW_AUDIT_LOG: 'AUDIT_LOG_VIEW',
+    MANAGE_IMPORTS: 'IMPORT_EXCEL',
+    CREATE_GET_PASS: 'GET_PASS_CREATE',
+    VIEW_GET_PASS: 'GET_PASS_VIEW',
+    REGISTER_GET_PASS_RETURN: 'GET_PASS_APPROVE_RETURN',
+};
+
+const normalizeRole = (role = '') => {
+    const normalized = String(role).toUpperCase();
+    // compatibility during migration
+    return normalized === 'SECURITY_MANAGER' ? 'SECURITY' : normalized;
+};
+
+const resolvePermissionKey = (permission) => PERMISSION_ALIASES[permission] || permission;
+
+const getPermissionsForRole = (role) => {
+    const normalizedRole = normalizeRole(role);
+    if (!normalizedRole) return [];
+    const permissions = Object.entries(PERMISSIONS)
+        .filter(([, roles]) => roles.includes(normalizedRole))
+        .map(([permission]) => permission);
+    if (permissions.length > 0) return permissions;
+
+    // ORG_MANAGER/SUPER_ADMIN are tenant-level admin contexts.
+    if (normalizedRole === 'ORG_MANAGER' || normalizedRole === 'SUPER_ADMIN') {
+        return Object.entries(PERMISSIONS)
+            .filter(([, roles]) => roles.includes('ADMIN'))
+            .map(([permission]) => permission);
+    }
+    return [];
 };
 
 /**
@@ -75,7 +120,14 @@ const PERMISSIONS = {
  * Usage: hasPermission(req.user.role, 'CREATE_MOVEMENT')
  */
 const hasPermission = (role, permission) => {
-    return PERMISSIONS[permission]?.includes(role) ?? false;
+    const normalizedRole = normalizeRole(role);
+    const resolvedPermission = resolvePermissionKey(permission);
+    const allowedRoles = PERMISSIONS[resolvedPermission] || [];
+    if (allowedRoles.includes(normalizedRole)) return true;
+    if (normalizedRole === 'ORG_MANAGER' || normalizedRole === 'SUPER_ADMIN') {
+        return allowedRoles.includes('ADMIN');
+    }
+    return false;
 };
 
 /**
@@ -95,4 +147,4 @@ const requirePermission = (permission) => {
     };
 };
 
-module.exports = { authorize, hasPermission, requirePermission, PERMISSIONS };
+module.exports = { authorize, hasPermission, requirePermission, PERMISSIONS, getPermissionsForRole };

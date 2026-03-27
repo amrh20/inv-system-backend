@@ -4,6 +4,7 @@ const { generateAccessToken } = require('../utils/jwt');
 const { invalidateTenantCache } = require('../middleware/subscription');
 const logger = require('../utils/logger');
 const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membershipGuard');
+const { activeSeatCountsByTenantIds, countActiveSeats } = require('../utils/tenantMemberActive');
 
 // ─── Plan Defaults ────────────────────────────────────────────────────────────
 const PLAN_DEFAULTS = {
@@ -131,7 +132,7 @@ const listTenants = async ({ page = 1, limit = 20, search, status } = {}) => {
             maxBranches: true,
             createdAt: true,
             updatedAt: true,
-            _count: { select: { memberships: true, locations: true } },
+            _count: { select: { locations: true } },
             children: {
                 orderBy: { createdAt: 'desc' },
                 select: {
@@ -151,7 +152,7 @@ const listTenants = async ({ page = 1, limit = 20, search, status } = {}) => {
                     maxBranches: true,
                     createdAt: true,
                     updatedAt: true,
-                    _count: { select: { memberships: true, locations: true } },
+                    _count: { select: { locations: true } },
                 },
             },
         },
@@ -162,11 +163,17 @@ const listTenants = async ({ page = 1, limit = 20, search, status } = {}) => {
         prisma.tenant.findMany(findManyQuery),
     ]);
 
+    const tenantIdsForCounts = roots.flatMap((root) => [
+        root.id,
+        ...(root.children || []).map((child) => child.id),
+    ]);
+    const activeSeatMap = await activeSeatCountsByTenantIds(prisma, tenantIdsForCounts);
+
     const toTenantRow = (tenant) => ({
         ...tenant,
         email: tenant.email || null,
         parentName: null,
-        usersCount: tenant._count?.memberships || 0,
+        usersCount: activeSeatMap.get(tenant.id) ?? 0,
     });
 
     const rows = roots.map((root) => ({
@@ -187,14 +194,15 @@ const getTenant = async (tenantId) => {
         where: { id: tenantId },
         include: {
             _count: {
-                select: { memberships: true, locations: true, movementDocuments: true, items: true },
+                select: { locations: true, movementDocuments: true, items: true },
             },
         },
     });
     if (!tenant) throw Object.assign(new Error('Tenant not found.'), { statusCode: 404 });
+    const usersCount = await countActiveSeats(prisma, tenantId);
     return {
         ...tenant,
-        usersCount: tenant._count?.memberships || 0,
+        usersCount,
     };
 };
 

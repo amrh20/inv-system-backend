@@ -1,6 +1,7 @@
 const prisma = require('../config/database');
 const { hashPassword } = require('../utils/password');
 const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membershipGuard');
+const { activeSeatCountsByTenantIds, countActiveSeats } = require('../utils/tenantMemberActive');
 
 const listTenants = async (query = {}, userContext = null) => {
     const { page = 1, limit = 20, status, search } = query;
@@ -58,20 +59,20 @@ const listTenants = async (query = {}, userContext = null) => {
         prisma.tenant.count({ where }),
         prisma.tenant.findMany({
             where,
-            include: {
-                _count: {
-                    select: { memberships: true }
-                }
-            },
             orderBy: { createdAt: 'desc' },
             skip,
             take: limitNum,
         }),
     ]);
 
+    const activeSeatMap = await activeSeatCountsByTenantIds(
+        prisma,
+        tenants.map((tenant) => tenant.id)
+    );
+
     const normalizedTenants = tenants.map((tenant) => ({
         ...tenant,
-        usersCount: tenant._count?.memberships || 0
+        usersCount: activeSeatMap.get(tenant.id) ?? 0,
     }));
 
     return { tenants: normalizedTenants, total, page: pageNum, limit: limitNum };
@@ -361,12 +362,12 @@ const suspendTenant = async (id) => {
 const getTenantById = async (id) => {
     const tenant = await prisma.tenant.findUnique({
         where: { id },
-        include: { _count: { select: { memberships: true } } }
     });
     if (!tenant) throw Object.assign(new Error('Tenant not found.'), { statusCode: 404 });
+    const usersCount = await countActiveSeats(prisma, id);
     return {
         ...tenant,
-        usersCount: tenant._count?.memberships || 0
+        usersCount,
     };
 };
 

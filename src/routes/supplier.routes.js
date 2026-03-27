@@ -2,22 +2,22 @@ const express = require('express');
 const router = express.Router();
 const supplierController = require('../controllers/supplier.controller');
 const { authenticate: protect } = require('../middleware/authenticate');
-const { authorize } = require('../middleware/authorize');
+const { requirePermission } = require('../middleware/authorize');
 
 router.use(protect);
 
 router
     .route('/')
-    .post(authorize('superadmin', 'admin', 'inventory_manager'), supplierController.createSupplier)
+    .post(requirePermission('BASIC_DATA_EDIT'), supplierController.createSupplier)
     .get(supplierController.getSuppliers);
 
 router
     .route('/:id')
     .get(supplierController.getSupplier)
-    .put(authorize('superadmin', 'admin', 'inventory_manager'), supplierController.updateSupplier);
+    .put(requirePermission('BASIC_DATA_EDIT'), supplierController.updateSupplier);
 
 router
     .route('/:id/status')
-    .patch(authorize('superadmin', 'admin'), supplierController.toggleStatus);
+    .patch(requirePermission('BASIC_DATA_EDIT'), supplierController.toggleStatus);
 
 module.exports = router;

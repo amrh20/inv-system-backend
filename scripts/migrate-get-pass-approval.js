@@ -5,9 +5,9 @@ async function migrate() {
     try {
         console.log('Running Get Pass approval migration...');
 
-        // 1. Add SECURITY_MANAGER to UserRole enum
-        await prisma.$executeRawUnsafe(`ALTER TYPE "UserRole" ADD VALUE IF NOT EXISTS 'SECURITY_MANAGER'`);
-        console.log('✅ Added SECURITY_MANAGER to UserRole');
+        // 1. Add SECURITY to UserRole enum
+        await prisma.$executeRawUnsafe(`ALTER TYPE "UserRole" ADD VALUE IF NOT EXISTS 'SECURITY'`);
+        console.log('✅ Added SECURITY to UserRole');
 
         // 2. Add new AssetLoanStatus values
         await prisma.$executeRawUnsafe(`ALTER TYPE "AssetLoanStatus" ADD VALUE IF NOT EXISTS 'DRAFT'`);

@@ -12,6 +12,7 @@
 
 const prisma = require('../config/database');
 const logger = require('../utils/logger');
+const { countActiveSeats } = require('../utils/tenantMemberActive');
 
 // ─── Simple in-memory cache (60s TTL) ─────────────────────────────────────────
 const cache = new Map();
@@ -116,9 +117,7 @@ const enforceSubscription = async (req, res, next) => {
         if (['POST', 'PATCH', 'PUT'].includes(req.method)) {
             // User limit — check on user creation
             if (req.path.match(/\/users$/i) && req.method === 'POST') {
-                const count = await prisma.tenantMember.count({
-                    where: { tenantId, isActive: true, user: { isActive: true } },
-                });
+                const count = await countActiveSeats(prisma, tenantId);
                 if (count >= tenant.maxUsers) {
                     return res.status(402).json({
                         success: false,
