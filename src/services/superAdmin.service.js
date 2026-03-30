@@ -5,6 +5,7 @@ const { invalidateTenantCache } = require('../middleware/subscription');
 const logger = require('../utils/logger');
 const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membershipGuard');
 const { activeSeatCountsByTenantIds, countActiveSeats } = require('../utils/tenantMemberActive');
+const { getPermissionsForMembership, membershipRoleCode, connectRole } = require('./rbac.service');
 
 // ─── Plan Defaults ────────────────────────────────────────────────────────────
 const PLAN_DEFAULTS = {
@@ -353,11 +354,11 @@ const createTenant = async (data, adminUserId, ipAddress) => {
                 create: {
                     tenantId: t.id,
                     userId: adminUser.id,
-                    role: 'ADMIN',
+                    role: connectRole('ADMIN'),
                     isActive: true,
                 },
                 update: {
-                    role: 'ADMIN',
+                    role: connectRole('ADMIN'),
                     isActive: true,
                 },
             });
@@ -365,7 +366,7 @@ const createTenant = async (data, adminUserId, ipAddress) => {
             const orgManagerMembership = await tx.tenantMember.findFirst({
                 where: {
                     tenantId: resolvedParentId,
-                    role: 'ORG_MANAGER',
+                    role: { code: 'ORG_MANAGER' },
                     isActive: true,
                     user: { isActive: true },
                 },
@@ -392,11 +393,11 @@ const createTenant = async (data, adminUserId, ipAddress) => {
                 create: {
                     tenantId: t.id,
                     userId: orgManagerMembership.userId,
-                    role: 'ADMIN',
+                    role: connectRole('ADMIN'),
                     isActive: true,
                 },
                 update: {
-                    role: 'ADMIN',
+                    role: connectRole('ADMIN'),
                     isActive: true,
                 },
             });
@@ -556,8 +557,8 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
         // 4) Memberships: org manager on org; hotel admin on hotel (second user when emails differ)
         await tx.tenantMember.upsert({
             where: { tenantId_userId: { tenantId: orgTenant.id, userId: orgManagerUser.id } },
-            create: { tenantId: orgTenant.id, userId: orgManagerUser.id, role: 'ORG_MANAGER', isActive: true },
-            update: { role: 'ORG_MANAGER', isActive: true },
+            create: { tenantId: orgTenant.id, userId: orgManagerUser.id, role: connectRole('ORG_MANAGER'), isActive: true },
+            update: { role: connectRole('ORG_MANAGER'), isActive: true },
         });
 
         if (separateHotelAdmin) {
@@ -571,8 +572,8 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
 
             await tx.tenantMember.upsert({
                 where: { tenantId_userId: { tenantId: hotelTenant.id, userId: hotelAdminUser.id } },
-                create: { tenantId: hotelTenant.id, userId: hotelAdminUser.id, role: 'ADMIN', isActive: true },
-                update: { role: 'ADMIN', isActive: true },
+                create: { tenantId: hotelTenant.id, userId: hotelAdminUser.id, role: connectRole('ADMIN'), isActive: true },
+                update: { role: connectRole('ADMIN'), isActive: true },
             });
 
             return {
@@ -590,8 +591,8 @@ const createFullOrganization = async (payload, adminUserId, ipAddress) => {
 
         await tx.tenantMember.upsert({
             where: { tenantId_userId: { tenantId: hotelTenant.id, userId: orgManagerUser.id } },
-            create: { tenantId: hotelTenant.id, userId: orgManagerUser.id, role: 'ADMIN', isActive: true },
-            update: { role: 'ADMIN', isActive: true },
+            create: { tenantId: hotelTenant.id, userId: orgManagerUser.id, role: connectRole('ADMIN'), isActive: true },
+            update: { role: connectRole('ADMIN'), isActive: true },
         });
 
         return {
@@ -843,8 +844,8 @@ const impersonateTenant = async (tenantId, adminUserId, ipAddress) => {
 
     // Find first admin user in tenant for the token payload
     const adminMembership = await prisma.tenantMember.findFirst({
-        where: { tenantId, role: 'ADMIN', isActive: true, user: { isActive: true } },
-        include: { user: true },
+        where: { tenantId, role: { code: 'ADMIN' }, isActive: true, user: { isActive: true } },
+        include: { user: true, role: true },
     });
     if (!adminMembership) {
         throw Object.assign(
@@ -853,11 +854,20 @@ const impersonateTenant = async (tenantId, adminUserId, ipAddress) => {
         );
     }
 
+    const rc = membershipRoleCode(adminMembership);
+    const permissions = await getPermissionsForMembership({
+        roleId: adminMembership.roleId,
+        roleCode: rc,
+    });
+
     const token = generateAccessToken({
         userId: adminMembership.user.id,
         tenantId,
-        role: adminMembership.role,
+        role: rc,
         email: adminMembership.user.email,
+        roleId: adminMembership.roleId,
+        permissions,
+        permissionVersion: adminMembership.user.permissionVersion ?? 0,
         readOnly: true,
         impersonatedBy: adminUserId,
     });

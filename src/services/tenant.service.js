@@ -2,6 +2,7 @@ const prisma = require('../config/database');
 const { hashPassword } = require('../utils/password');
 const { assertOrgManagerAssignmentWithinOrgHierarchy } = require('../utils/membershipGuard');
 const { activeSeatCountsByTenantIds, countActiveSeats } = require('../utils/tenantMemberActive');
+const { membershipRoleCode, connectRole } = require('./rbac.service');
 
 const listTenants = async (query = {}, userContext = null) => {
     const { page = 1, limit = 20, status, search } = query;
@@ -28,7 +29,7 @@ const listTenants = async (query = {}, userContext = null) => {
         });
 
         const orgTenantIds = memberships
-            .filter((membership) => membership.role === 'ORG_MANAGER')
+            .filter((membership) => membershipRoleCode(membership) === 'ORG_MANAGER')
             .map((membership) => membership.tenantId)
             .filter(Boolean);
 
@@ -47,7 +48,7 @@ const listTenants = async (query = {}, userContext = null) => {
             ];
         } else {
             visibleTenantIds = memberships
-                .filter((membership) => membership.role === 'ADMIN')
+                .filter((membership) => membershipRoleCode(membership) === 'ADMIN')
                 .map((membership) => membership.tenantId)
                 .filter(Boolean);
         }
@@ -115,7 +116,7 @@ const createTenant = async (data) => {
             const parentOrgManagers = await tx.tenantMember.findMany({
                 where: {
                     tenantId: parentId,
-                    role: 'ORG_MANAGER',
+                    role: { code: 'ORG_MANAGER' },
                     isActive: true,
                 },
                 select: { userId: true },
@@ -223,11 +224,11 @@ const createTenant = async (data) => {
                 create: {
                     tenantId: tenant.id,
                     userId: adminUser.id,
-                    role: 'ORG_MANAGER',
+                    role: connectRole('ORG_MANAGER'),
                     isActive: true,
                 },
                 update: {
-                    role: 'ORG_MANAGER',
+                    role: connectRole('ORG_MANAGER'),
                     isActive: true,
                 },
             });
@@ -240,11 +241,11 @@ const createTenant = async (data) => {
                     create: {
                         tenantId: tenant.id,
                         userId: orgManagerUserId,
-                        role: 'ORG_MANAGER',
+                        role: connectRole('ORG_MANAGER'),
                         isActive: true,
                     },
                     update: {
-                        role: 'ORG_MANAGER',
+                        role: connectRole('ORG_MANAGER'),
                         isActive: true,
                     },
                 });
@@ -259,11 +260,11 @@ const createTenant = async (data) => {
                 create: {
                     tenantId: tenant.id,
                     userId: adminUser.id,
-                    role: branchAdminRole,
+                    role: connectRole(branchAdminRole),
                     isActive: true,
                 },
                 update: {
-                    role: branchAdminRole,
+                    role: connectRole(branchAdminRole),
                     isActive: true,
                 },
             });
